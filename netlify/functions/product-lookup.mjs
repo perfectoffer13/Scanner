@@ -2,8 +2,8 @@ const ALLOWED_ORIGIN = "https://backbar-product-scanner.netlify.app";
 const USER_AGENT = "BackbarProductScanner/0.2 (+https://backbar-product-scanner.netlify.app)";
 const REQUEST_TIMEOUT_MS = 8000;
 const MAX_TEXT = 6000;
-const AI_LOOKUP_TIMEOUT_MS = 20000;
-const AI_LOOKUP_MODEL = "gpt-5";
+const AI_LOOKUP_TIMEOUT_MS = 25000;
+const AI_LOOKUP_MODEL = "claude-sonnet-4-20250514";
 
 function text(value, maxLength = MAX_TEXT) {
   if (value === null || value === undefined) return "";
@@ -272,14 +272,21 @@ function responseOutputText(data) {
   }
 
   const chunks = [];
+  const content = Array.isArray(data && data.content) ? data.content : [];
+  for (const piece of content) {
+    if (typeof (piece && piece.text) === "string") chunks.push(piece.text);
+    else if (typeof (piece && piece.text && piece.text.value) === "string") chunks.push(piece.text.value);
+  }
+
   const output = Array.isArray(data && data.output) ? data.output : [];
   for (const item of output) {
-    const content = Array.isArray(item && item.content) ? item.content : [];
-    for (const piece of content) {
+    const itemContent = Array.isArray(item && item.content) ? item.content : [];
+    for (const piece of itemContent) {
       if (typeof (piece && piece.text) === "string") chunks.push(piece.text);
       else if (typeof (piece && piece.text && piece.text.value) === "string") chunks.push(piece.text.value);
     }
   }
+
   return chunks.join("\n");
 }
 
@@ -307,7 +314,7 @@ function responseCitationUrls(data) {
     });
   }
 
-  visit(data && data.output);
+  visit(data);
   return urls.slice(0, 8);
 }
 
@@ -399,7 +406,7 @@ async function lookupWithAI(barcode) {
     };
   }
 
-  const apiKey = text(process.env.OPENAI_API_KEY, 300);
+  const apiKey = text(process.env.ANTHROPIC_API_KEY, 300);
   if (!apiKey) {
     return {
       configured: false,
@@ -427,34 +434,67 @@ async function lookupWithAI(barcode) {
     "Barcode: " + barcode,
   ].join("\n");
 
-  try {
-    const response = await fetch("https://api.openai.com/v1/responses", {
+  const requestBody = (messages) => ({
+    model: process.env.ANTHROPIC_BARCODE_MODEL || AI_LOOKUP_MODEL,
+    max_tokens: 900,
+    tools: [{
+      type: "web_search_20250305",
+      name: "web_search",
+      max_uses: 3,
+    }],
+    messages,
+  });
+
+  async function requestAnthropic(messages) {
+    return fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       signal: controller.signal,
       headers: {
         accept: "application/json",
         "content-type": "application/json",
-        authorization: "Bearer " + apiKey,
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
       },
-      body: JSON.stringify({
-        model: process.env.OPENAI_BARCODE_MODEL || AI_LOOKUP_MODEL,
-        tools: [{ type: "web_search_preview", search_context_size: "high" }],
-        input,
-        max_output_tokens: 900,
-      }),
+      body: JSON.stringify(requestBody(messages)),
     });
+  }
 
-    const raw = await response.text();
+  try {
+    const responseData = [];
+    let response = await requestAnthropic([
+      { role: "user", content: input },
+    ]);
+    let raw = await response.text();
     let data = null;
     try {
       data = raw ? JSON.parse(raw) : null;
     } catch {
       data = null;
     }
+    responseData.push(data);
+
+    if (
+      response.ok &&
+      data &&
+      data.stop_reason === "pause_turn" &&
+      Array.isArray(data.content)
+    ) {
+      response = await requestAnthropic([
+        { role: "user", content: input },
+        { role: "assistant", content: data.content },
+      ]);
+      raw = await response.text();
+      try {
+        data = raw ? JSON.parse(raw) : null;
+      } catch {
+        data = null;
+      }
+      responseData.push(data);
+    }
 
     const responseText = responseOutputText(data);
     const parsed = parseAIJson(responseText);
-    const citationUrls = responseCitationUrls(data);
+    const citationUrls = responseCitationUrls(responseData);
     const product = response.ok
       ? normalizeAIProduct(parsed, barcode, citationUrls)
       : null;
@@ -678,7 +718,7 @@ export default async function productLookup(request) {
       sources: attempts,
       aiLookup: {
         enabled: String(process.env.AI_BARCODE_LOOKUP_ENABLED || "").toLowerCase() === "true",
-        configured: !!process.env.OPENAI_API_KEY,
+        configured: !!process.env.ANTHROPIC_API_KEY,
       },
     });
   }
