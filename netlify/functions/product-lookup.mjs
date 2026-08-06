@@ -3,7 +3,7 @@ const USER_AGENT = "BackbarProductScanner/0.2 (+https://backbar-product-scanner.
 const REQUEST_TIMEOUT_MS = 8000;
 const MAX_TEXT = 6000;
 const AI_LOOKUP_TIMEOUT_MS = 25000;
-const AI_LOOKUP_MODEL = "claude-sonnet-4-20250514";
+const AI_LOOKUP_MODEL = "claude-haiku-4-5-20251001";
 
 function text(value, maxLength = MAX_TEXT) {
   if (value === null || value === undefined) return "";
@@ -436,11 +436,11 @@ async function lookupWithAI(barcode) {
 
   const requestBody = (messages) => ({
     model: process.env.ANTHROPIC_BARCODE_MODEL || AI_LOOKUP_MODEL,
-    max_tokens: 900,
+    max_tokens: 600,
     tools: [{
       type: "web_search_20250305",
       name: "web_search",
-      max_uses: 3,
+      max_uses: 2,
     }],
     messages,
   });
