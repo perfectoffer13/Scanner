@@ -42,6 +42,42 @@ function response(status, body) {
 }
 
 export default async function diagnostics(request) {
+  const store = getStore(STORE_NAME);
+
+  if (request.method === "GET") {
+    const url = new URL(request.url);
+    const suppliedKey =
+      request.headers.get("x-diagnostics-key") || url.searchParams.get("key") || "";
+    const expectedKey = process.env.DIAGNOSTICS_READ_KEY || "";
+
+    if (!expectedKey || suppliedKey !== expectedKey) {
+      return response(401, { ok: false, error: "Diagnostic read key required" });
+    }
+
+    try {
+      const latest = await store.get("latest.json", {
+        consistency: "strong",
+        type: "text",
+      });
+      if (!latest) {
+        return response(404, { ok: false, error: "No diagnostic snapshot stored" });
+      }
+      return new Response(latest, {
+        status: 200,
+        headers: {
+          "content-type": "application/json; charset=utf-8",
+          "cache-control": "no-store",
+        },
+      });
+    } catch (error) {
+      return response(500, {
+        ok: false,
+        error: "Could not read diagnostic payload",
+        detail: truncate(error?.message || error, 300),
+      });
+    }
+  }
+
   if (request.method !== "POST") {
     return response(405, { ok: false, error: "POST required" });
   }
@@ -98,7 +134,6 @@ export default async function diagnostics(request) {
   }
 
   try {
-    const store = getStore(STORE_NAME);
     const sessionKey = `sessions/${sessionId}.json`;
     await store.set(sessionKey, serialized);
     await store.set("latest.json", serialized);
