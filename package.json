@@ -1,0 +1,7 @@
+{
+  "name": "backbar-product-scanner",
+  "private": true,
+  "dependencies": {
+    "@netlify/blobs": "latest"
+  }
+}
