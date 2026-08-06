@@ -147,7 +147,7 @@ p.sub{color:var(--muted);font-size:13.5px;margin:0 0 26px;}
 (function(){
 "use strict";
 
-const APP_VERSION = "0.4.2";
+const APP_VERSION = "0.4.3";
 const appVersionEl = document.getElementById("app-version");
 if (appVersionEl) appVersionEl.textContent = "Version " + APP_VERSION;
 document.title = "Barcode Scanner Test · v" + APP_VERSION;
@@ -164,8 +164,8 @@ const diagnosticsOutput = document.getElementById("diagnostics-output");
 
 const USE_NATIVE = ("BarcodeDetector" in window);
 document.getElementById("engine-note").textContent = USE_NATIVE
-  ? "Using continuous autofocus only."
-  : "Using the fallback scanner with continuous autofocus only.";
+  ? "Using continuous autofocus with autofocus pulses."
+  : "Using the fallback scanner with continuous autofocus and autofocus pulses.";
 
 const DIAGNOSTIC_SCHEMA_VERSION = 1;
 const DIAGNOSTIC_KEY = "backbar_identify_diagnostics_v1";
@@ -396,10 +396,14 @@ function focusState(capabilities, settings){
   };
 }
 function requestFocus(engine, capabilities, settings, applyConstraints, reason, readback){
+  const requestGeneration = focusRequestGeneration;
+  const requestIsCurrent = () =>
+    requestGeneration === focusRequestGeneration && !restarting;
   const state = focusState(capabilities, settings);
   const hint = document.getElementById("tap-hint");
   const continuousSupported = !state.supportedModes.length ||
     state.supportedModes.indexOf("continuous") !== -1;
+
   debugLog("focus_capabilities_detected", {
     engine:engine,
     reason:reason,
@@ -409,9 +413,6 @@ function requestFocus(engine, capabilities, settings, applyConstraints, reason, 
     continuousSupported:continuousSupported
   });
 
-  // Some Android browser builds report a continuous current setting while
-  // incorrectly omitting "continuous" from the capability list. Treat that
-  // as a diagnostic mismatch, not as permission to fall back to manual focus.
   if (state.supportedModes.length && !continuousSupported) {
     logThrottled("focus_capability_mismatch", {
       engine:engine,
@@ -431,15 +432,17 @@ function requestFocus(engine, capabilities, settings, applyConstraints, reason, 
     return;
   }
 
+  if (!requestIsCurrent()) return;
   if (hint) hint.textContent = "Reasserting autofocus…";
   debugLog("focus_request_started", {
     engine:engine,
     reason:reason,
     requested:"continuous",
-    strategy:"exact_then_ideal"
+    strategy:"top_level_exact_then_ideal"
   });
 
   function recordSuccess(strategy){
+    if (!requestIsCurrent()) return;
     let verification = null;
     try { verification = readback ? readback() : null; } catch(error) {}
     const verifiedMode = verification && verification.settings
@@ -460,6 +463,7 @@ function requestFocus(engine, capabilities, settings, applyConstraints, reason, 
   }
 
   function recordFailure(error, strategy){
+    if (!requestIsCurrent()) return;
     if (hint) hint.textContent = "Continuous autofocus could not be enabled";
     debugLog("focus_request_failed", {
       engine:engine,
@@ -473,10 +477,12 @@ function requestFocus(engine, capabilities, settings, applyConstraints, reason, 
   }
 
   function runRequest(constraints, strategy, retry){
+    if (!requestIsCurrent()) return;
     let result;
     try {
       result = applyConstraints(constraints);
     } catch(error) {
+      if (!requestIsCurrent()) return;
       if (retry) {
         debugLog("focus_request_retry", {
           engine:engine,
@@ -494,8 +500,10 @@ function requestFocus(engine, capabilities, settings, applyConstraints, reason, 
     }
 
     Promise.resolve(result).then(() => {
+      if (!requestIsCurrent()) return;
       recordSuccess(strategy);
     }).catch(error => {
+      if (!requestIsCurrent()) return;
       if (retry) {
         debugLog("focus_request_retry", {
           engine:engine,
@@ -512,14 +520,12 @@ function requestFocus(engine, capabilities, settings, applyConstraints, reason, 
     });
   }
 
-  // Only continuous autofocus is attempted. The ideal retry accommodates
-  // devices whose browser capability report is incomplete or contradictory.
   runRequest(
-    { advanced:[{ focusMode:{ exact:"continuous" } }] },
-    "exact",
+    { focusMode:{ exact:"continuous" } },
+    "top_level_exact",
     {
-      constraints:{ advanced:[{ focusMode:{ ideal:"continuous" } }] },
-      strategy:"ideal_retry"
+      constraints:{ focusMode:{ ideal:"continuous" } },
+      strategy:"top_level_ideal_retry"
     }
   );
 }
@@ -571,9 +577,18 @@ function clearFocusReassertion(){
   if (focusReassertTimer) clearTimeout(focusReassertTimer);
   focusReassertTimer = null;
 }
+function clearFocusPulse(){
+  if (focusPulseTimer) clearTimeout(focusPulseTimer);
+  focusPulseTimer = null;
+}
+function invalidateFocusRequests(){
+  focusRequestGeneration++;
+  clearFocusReassertion();
+  clearFocusPulse();
+}
 function scheduleFocusReassertion(reason, delayMs){
   clearFocusReassertion();
-  if (!nativeTrack && !fallbackScanner) return;
+  if (restarting || (!nativeTrack && !fallbackScanner)) return;
   const engine = nativeTrack ? "native" : "html5-qrcode-fallback";
   const delay = Number.isFinite(delayMs) ? delayMs : 4500;
   debugLog("focus_reassert_scheduled", {
@@ -581,13 +596,164 @@ function scheduleFocusReassertion(reason, delayMs){
     reason:reason,
     delayMs:delay
   });
+  const generation = focusRequestGeneration;
   focusReassertTimer = setTimeout(() => {
     focusReassertTimer = null;
-    if (nativeTrack) requestNativeFocus(reason + "_reassert");
-    else if (fallbackScanner) requestFallbackFocus(reason + "_reassert");
-    if (nativeTrack || fallbackScanner) {
+    if (generation !== focusRequestGeneration || restarting) return;
+    if (nativeTrack) {
+      requestNativeFocus(reason + "_reassert");
+      scheduleFocusPulse(reason + "_pulse", 150);
+    } else if (fallbackScanner) {
+      requestFallbackFocus(reason + "_reassert");
+      scheduleFocusPulse(reason + "_pulse", 150);
+    }
+    if (!restarting && (nativeTrack || fallbackScanner)) {
       scheduleFocusReassertion("periodic", 4500);
     }
+  }, delay);
+}
+function scheduleFocusPulse(reason, delayMs){
+  clearFocusPulse();
+  if (restarting || (!nativeTrack && !fallbackScanner)) return;
+  const generation = focusRequestGeneration;
+  const delay = Number.isFinite(delayMs) ? delayMs : 180;
+  const engine = nativeTrack ? "native" : "html5-qrcode-fallback";
+  debugLog("focus_pulse_scheduled", {
+    engine:engine,
+    reason:reason,
+    delayMs:delay
+  });
+
+  focusPulseTimer = setTimeout(() => {
+    focusPulseTimer = null;
+    const track = nativeTrack;
+    const scanner = fallbackScanner;
+    const isCurrent = () =>
+      generation === focusRequestGeneration &&
+      !restarting &&
+      (track ? nativeTrack === track : fallbackScanner === scanner);
+    if (!isCurrent()) return;
+
+    let capabilities = {};
+    try {
+      capabilities = track && track.getCapabilities
+        ? track.getCapabilities()
+        : scanner && scanner.getRunningTrackCapabilities
+          ? scanner.getRunningTrackCapabilities()
+          : {};
+    } catch(error) {
+      debugLog("focus_pulse_unavailable", {
+        engine:engine,
+        reason:reason,
+        phase:"capabilities",
+        error:errorDetails(error)
+      });
+      return;
+    }
+
+    const supportedModes = Array.isArray(capabilities.focusMode)
+      ? capabilities.focusMode
+      : [];
+    if (supportedModes.length && supportedModes.indexOf("single-shot") === -1) {
+      debugLog("focus_pulse_unavailable", {
+        engine:engine,
+        reason:reason,
+        phase:"capability",
+        requested:"single-shot",
+        supportedModes:supportedModes
+      });
+      return;
+    }
+
+    const apply = track
+      ? constraints => track.applyConstraints(constraints)
+      : scanner && scanner.applyVideoConstraints
+        ? constraints => scanner.applyVideoConstraints(constraints)
+        : null;
+    if (!apply) {
+      debugLog("focus_pulse_unavailable", {
+        engine:engine,
+        reason:reason,
+        phase:"apply_constraints",
+        requested:"single-shot"
+      });
+      return;
+    }
+
+    debugLog("focus_pulse_started", {
+      engine:engine,
+      reason:reason,
+      requested:"single-shot"
+    });
+
+    let result;
+    try {
+      result = apply({ focusMode:{ exact:"single-shot" } });
+    } catch(error) {
+      debugLog("focus_pulse_unavailable", {
+        engine:engine,
+        reason:reason,
+        phase:"apply_constraints",
+        requested:"single-shot",
+        error:errorDetails(error)
+      });
+      return;
+    }
+
+    Promise.resolve(result).then(() => {
+      if (!isCurrent()) return;
+      debugLog("focus_pulse_succeeded", {
+        engine:engine,
+        reason:reason,
+        mode:"single-shot"
+      });
+      focusPulseTimer = setTimeout(() => {
+        focusPulseTimer = null;
+        if (!isCurrent()) return;
+        let restoreResult;
+        try {
+          restoreResult = apply({ focusMode:{ exact:"continuous" } });
+        } catch(error) {
+          debugLog("focus_pulse_unavailable", {
+            engine:engine,
+            reason:reason,
+            phase:"restore_continuous",
+            requested:"continuous",
+            error:errorDetails(error)
+          });
+          return;
+        }
+        Promise.resolve(restoreResult).then(() => {
+          if (isCurrent()) {
+            debugLog("focus_pulse_restored", {
+              engine:engine,
+              reason:reason,
+              mode:"continuous"
+            });
+          }
+        }).catch(error => {
+          if (isCurrent()) {
+            debugLog("focus_pulse_unavailable", {
+              engine:engine,
+              reason:reason,
+              phase:"restore_continuous",
+              requested:"continuous",
+              error:errorDetails(error)
+            });
+          }
+        });
+      }, 260);
+    }).catch(error => {
+      if (isCurrent()) {
+        debugLog("focus_pulse_unavailable", {
+          engine:engine,
+          reason:reason,
+          phase:"apply_constraints",
+          requested:"single-shot",
+          error:errorDetails(error)
+        });
+      }
+    });
   }, delay);
 }
 
@@ -694,12 +860,22 @@ window.addEventListener("unhandledrejection", event => {
   debugLog("unhandled_rejection", { reason:errorDetails(event.reason) });
 });
 
-let lastCode = null, matchCount = 0;
-const REQUIRED_MATCHES = 2;
+let lastCode = null, matchCount = 0, candidateStartedAt = 0, lastDecodedAt = 0, candidateSwitches = 0;
+const REQUIRED_MATCHES = 3;
+const REQUIRED_MATCHES_AFTER_SWITCH = 4;
+const CANDIDATE_WINDOW_MS = 2200;
+const CANDIDATE_LOOKUP_WINDOW_MS = 15000;
 
 let nativeStream = null, nativeTrack = null, nativeDetector = null, nativeLoopId = null, lastDetectAt = 0;
 let fallbackScanner = null;
 let focusReassertTimer = null;
+let focusPulseTimer = null;
+let focusRequestGeneration = 0;
+let candidateHistory = [];
+let rejectedCandidates = new Set();
+let candidateValidationInFlight = false;
+let candidateValidationAttempted = new Set();
+let candidateFormatConflict = false;
 let restarting = false;
 let scanAttempt = 0, scanStartedAt = 0;
 let nativeDetectErrorCount = 0, fallbackDecodeErrorCount = 0;
@@ -726,6 +902,14 @@ function startScan(){
   }
   lastCode = null;
   matchCount = 0;
+  candidateStartedAt = 0;
+  lastDecodedAt = 0;
+  candidateSwitches = 0;
+  candidateHistory = [];
+  rejectedCandidates = new Set();
+  candidateValidationInFlight = false;
+  candidateValidationAttempted = new Set();
+  candidateFormatConflict = false;
   scanAttempt++;
   scanStartedAt = performance.now();
   statusEl.textContent = "Looking for a barcode…";
@@ -794,7 +978,8 @@ function startNative(){
     });
 
     requestNativeFocus("startup");
-    scheduleFocusReassertion("native_startup", 1200);
+    scheduleFocusPulse("native_startup", 450);
+    scheduleFocusReassertion("native_startup", 1800);
 
     try {
       const caps = nativeTrack.getCapabilities ? nativeTrack.getCapabilities() : {};
@@ -855,7 +1040,13 @@ function nativeLoop(ts){
         onDecoded(first.rawValue, {
           engine:"native",
           format:first.format || null,
-          detectedCount:codes.length
+          detectedCount:codes.length,
+          boundingBox:first.boundingBox
+            ? pick(first.boundingBox, ["x","y","width","height"])
+            : null,
+          cornerPoints:Array.isArray(first.cornerPoints)
+            ? first.cornerPoints.slice(0, 4).map(point => pick(point, ["x","y"]))
+            : null
         });
       }
     }).catch(error => {
@@ -892,11 +1083,12 @@ function toggleTorch(){
 document.getElementById("video-region").addEventListener("click", () => {
   if (USE_NATIVE) requestNativeFocus("tap");
   else requestFallbackFocus("tap");
+  scheduleFocusPulse("tap", 120);
 });
 
 
 function stopNative(){
-  clearFocusReassertion();
+  invalidateFocusRequests();
   if (nativeLoopId) cancelAnimationFrame(nativeLoopId);
   nativeLoopId = null;
   nativeDetector = null;
@@ -976,7 +1168,8 @@ function startFallback(){
         capabilities:pick(caps, ["width","height","frameRate","facingMode","focusMode","focusDistance","torch","zoom"])
       });
       requestFallbackFocus("startup");
-      scheduleFocusReassertion("fallback_startup", 1200);
+      scheduleFocusPulse("fallback_startup", 450);
+      scheduleFocusReassertion("fallback_startup", 1800);
       if (caps && caps.torch) {
         const torchBtn = document.getElementById("btn-torch");
         torchBtn.style.display = "inline-block";
@@ -1009,7 +1202,7 @@ function onFallbackDecodeFailure(message){
 }
 
 function stopFallback(callback){
-  clearFocusReassertion();
+  invalidateFocusRequests();
   if (fallbackScanner) {
     const scanner = fallbackScanner;
     debugLog("camera_stream_stopping", { engine:"html5-qrcode-fallback" });
@@ -1031,7 +1224,7 @@ function stopFallback(callback){
 }
 
 /* ---------- shared ---------- */
-function onDecoded(decodedText, metadata){
+async function onDecoded(decodedText, metadata){
   const rawValue = decodedText === undefined || decodedText === null ? "" : String(decodedText);
   const code = rawValue.trim();
   const meta = metadata || { engine:"unknown" };
@@ -1039,10 +1232,69 @@ function onDecoded(decodedText, metadata){
     debugLog("decode_empty", { engine:meta.engine || "unknown", rawValue:truncate(rawValue, 160) });
     return;
   }
+  if (rejectedCandidates.has(code)) {
+    logThrottled("barcode_candidate_ignored", {
+      engine:meta.engine || "unknown",
+      value:truncate(code, 160),
+      reason:"previous_conflict_validation_failed"
+    }, 3000);
+    return;
+  }
+  if (candidateValidationInFlight) return;
+
+  const now = performance.now();
+  const elapsedMs = Math.round(now - scanStartedAt);
+  const staleGap = lastDecodedAt > 0 && now - lastDecodedAt > CANDIDATE_WINDOW_MS;
+  const formatKey = String(meta.format || (code.length === 13 ? "ean_13" : code.length === 12 ? "upc_a" : "unknown"))
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+  const previousCode = lastCode;
+  const previousRecord = previousCode
+    ? candidateHistory.find(item => item.code === previousCode)
+    : null;
+
+  let historyRecord = candidateHistory.find(item => item.code === code);
+  if (!historyRecord || (code === previousCode && staleGap)) {
+    historyRecord = {
+      code:code,
+      format:formatKey,
+      rawValue:rawValue,
+      count:0,
+      firstSeenAt:now,
+      lastSeenAt:now,
+      metadata:meta
+    };
+    candidateHistory.push(historyRecord);
+  }
+  historyRecord.count++;
+  historyRecord.lastSeenAt = now;
+  historyRecord.format = formatKey || historyRecord.format;
+  historyRecord.rawValue = rawValue;
+  historyRecord.metadata = meta;
 
   if (code !== lastCode) {
+    candidateSwitches += lastCode ? 1 : 0;
+    candidateFormatConflict = candidateFormatConflict ||
+      !!(previousRecord && previousRecord.format && formatKey &&
+        previousRecord.format !== formatKey);
     lastCode = code;
     matchCount = 1;
+    candidateStartedAt = now;
+    debugLog("barcode_candidate_changed", {
+      engine:meta.engine || "unknown",
+      previousValue:previousCode ? truncate(previousCode, 160) : null,
+      previousFormat:previousRecord ? previousRecord.format : null,
+      value:truncate(code, 160),
+      format:meta.format || null,
+      formatConflict:candidateFormatConflict,
+      candidateSwitches:candidateSwitches,
+      detectedCount:meta.detectedCount || 1,
+      geometry:{
+        boundingBox:meta.boundingBox || null,
+        cornerPoints:meta.cornerPoints || null
+      },
+      elapsedMs:elapsedMs
+    });
     debugLog("barcode_candidate", {
       engine:meta.engine || "unknown",
       format:meta.format || null,
@@ -1050,30 +1302,66 @@ function onDecoded(decodedText, metadata){
       normalizedValue:truncate(code, 160),
       candidateLength:code.length,
       confirmationCount:matchCount,
+      requiredMatches:candidateSwitches ? REQUIRED_MATCHES_AFTER_SWITCH : REQUIRED_MATCHES,
       detectedCount:meta.detectedCount || 1,
-      elapsedMs:Math.round(performance.now() - scanStartedAt)
+      geometry:{
+        boundingBox:meta.boundingBox || null,
+        cornerPoints:meta.cornerPoints || null
+      },
+      elapsedMs:elapsedMs
+    });
+  } else if (staleGap) {
+    matchCount = 1;
+    candidateStartedAt = now;
+    debugLog("barcode_candidate_reset", {
+      engine:meta.engine || "unknown",
+      value:truncate(code, 160),
+      reason:"stale_detection_gap",
+      gapMs:Math.round(now - lastDecodedAt),
+      requiredMatches:candidateSwitches ? REQUIRED_MATCHES_AFTER_SWITCH : REQUIRED_MATCHES,
+      elapsedMs:elapsedMs
     });
   } else {
     matchCount++;
-    if (matchCount === REQUIRED_MATCHES) {
+    if (matchCount === (candidateSwitches ? REQUIRED_MATCHES_AFTER_SWITCH : REQUIRED_MATCHES)) {
       debugLog("barcode_candidate_confirmed", {
         engine:meta.engine || "unknown",
         format:meta.format || null,
         value:truncate(code, 160),
         confirmationCount:matchCount,
-        elapsedMs:Math.round(performance.now() - scanStartedAt)
+        requiredMatches:candidateSwitches ? REQUIRED_MATCHES_AFTER_SWITCH : REQUIRED_MATCHES,
+        candidateSwitches:candidateSwitches,
+        geometry:{
+          boundingBox:meta.boundingBox || null,
+          cornerPoints:meta.cornerPoints || null
+        },
+        elapsedMs:elapsedMs
       });
     }
   }
+  lastDecodedAt = now;
 
-  if (matchCount >= REQUIRED_MATCHES) {
+  const requiredMatches = candidateSwitches ? REQUIRED_MATCHES_AFTER_SWITCH : REQUIRED_MATCHES;
+  const candidateAgeMs = Math.round(now - candidateStartedAt);
+  if (matchCount >= requiredMatches && candidateAgeMs <= CANDIDATE_WINDOW_MS) {
+    if (candidateFormatConflict && candidateSwitches > 0) {
+      statusEl.textContent = "Verifying the barcode…";
+      void validateConflictingCandidates(code, meta);
+      return;
+    }
     statusEl.textContent = "Got it.";
     debugLog("barcode_accepted", {
       engine:meta.engine || "unknown",
       format:meta.format || null,
       value:truncate(code, 160),
       confirmationCount:matchCount,
-      elapsedMs:Math.round(performance.now() - scanStartedAt)
+      requiredMatches:requiredMatches,
+      candidateSwitches:candidateSwitches,
+      geometry:{
+        boundingBox:meta.boundingBox || null,
+        cornerPoints:meta.cornerPoints || null
+      },
+      elapsedMs:elapsedMs
     });
     stopScan(() => showResult(code, Object.assign({}, meta, { rawValue:rawValue })), "barcode_confirmed");
   } else {
@@ -1120,7 +1408,7 @@ function showResult(barcode, metadata){
   document.getElementById("r-barcode").textContent = rawValue;
   document.getElementById("r-format").textContent = "Format: " + format;
   document.getElementById("r-body").innerHTML =
-    "<div class=\"barcode-meta\">Checking broad product sources and optional AI evidence…</div>" +
+    "<div class=\"barcode-meta\">Checking beverage catalogs and AI web evidence…</div>" +
     "<div class=\"barcode-note\">The decoded barcode remains shown above while the online match is checked.</div>";
   resultCard.classList.add("show");
 
@@ -1275,20 +1563,25 @@ function renderProductMatch(product){
   }
 }
 
-function renderNoProductMatch(barcode, sources){
+function renderNoProductMatch(barcode, sources, context){
   const body = document.getElementById("r-body");
   body.innerHTML = "";
-
+  const outOfScopeProduct = context && context.outOfScopeProduct;
   const message = document.createElement("div");
   message.className = "barcode-note";
-  message.textContent =
-    "The barcode was read correctly, but no verified product record was found in the connected sources.";
+  message.textContent = outOfScopeProduct
+    ? "Verified match: " +
+      [outOfScopeProduct.brand, outOfScopeProduct.name, outOfScopeProduct.volume]
+        .filter(Boolean).join(" ") +
+      ". This item is outside the liquid-stock scope."
+    : "The barcode was read correctly, but no verified liquid-product record was found.";
   body.appendChild(message);
 
   const note = document.createElement("div");
   note.className = "product-source-note";
-  note.textContent =
-    "This is a product-catalog gap, not a scanning error. The item can be added manually in the inventory phase.";
+  note.textContent = outOfScopeProduct
+    ? "This scanner is intentionally focused on spirits, wine, beer, cooldrinks, mixers, juices, water, shots, and other liquid products for hospitality stock take."
+    : "This is a product-catalog gap, not a scanning error. The item can be added manually in the inventory phase.";
   body.appendChild(note);
 
   if (Array.isArray(sources) && sources.length) {
@@ -1324,7 +1617,6 @@ function renderNoProductMatch(barcode, sources){
   webSearchLink.rel = "noopener noreferrer";
   webSearchLink.textContent = "Search this exact barcode on the web";
   body.appendChild(webSearchLink);
-
 }
 
 function renderProductLookupError(){
@@ -1337,15 +1629,8 @@ function renderProductLookupError(){
   body.appendChild(message);
 }
 
-async function lookupProduct(barcode, metadata){
+async function requestProductLookupData(barcode){
   const startedAt = performance.now();
-  const source = "Backbar product lookup";
-  debugLog("product_lookup_started", {
-    barcode:barcode,
-    engine:metadata && metadata.engine ? metadata.engine : "unknown",
-    sources:["Open Food Facts v3", "UPCitemdb trial", "AI web evidence (optional)"]
-  });
-
   let controller = null;
   let timeoutId = null;
   try {
@@ -1353,7 +1638,6 @@ async function lookupProduct(barcode, metadata){
     timeoutId = setTimeout(() => {
       if (controller) controller.abort();
     }, 30000);
-
     const response = await fetch(
       PRODUCT_LOOKUP_ENDPOINT + "?barcode=" + encodeURIComponent(barcode),
       {
@@ -1366,17 +1650,180 @@ async function lookupProduct(barcode, metadata){
     const raw = await response.text();
     let data = null;
     try { data = raw ? JSON.parse(raw) : null; } catch(error) {}
-
-    clearTimeout(timeoutId);
-    debugLog("product_lookup_http_response", {
-      source:source,
-      barcode:barcode,
+    return {
+      data:data,
       status:response.status,
       ok:response.ok,
       elapsedMs:Math.round(performance.now() - startedAt)
+    };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function validateConflictingCandidates(currentCode, currentMeta){
+  if (candidateValidationInFlight) return;
+  candidateValidationInFlight = true;
+  const attempt = scanAttempt;
+  const startedAt = performance.now();
+  const now = performance.now();
+  const alternatives = candidateHistory
+    .filter(item =>
+      item.code !== currentCode &&
+      !candidateValidationAttempted.has(item.code) &&
+      now - item.lastSeenAt <= CANDIDATE_LOOKUP_WINDOW_MS
+    )
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 1);
+  const currentCandidate = {
+    code:currentCode,
+    rawValue:currentMeta && currentMeta.rawValue
+      ? currentMeta.rawValue
+      : currentCode,
+    format:currentMeta && currentMeta.format
+      ? currentMeta.format
+      : null,
+    metadata:currentMeta || {}
+  };
+  const candidates = alternatives.concat(currentCandidate);
+  let hadLookupError = false;
+
+  debugLog("barcode_conflict_validation_started", {
+    currentValue:truncate(currentCode, 160),
+    candidateCount:candidates.length,
+    candidates:candidates.map(item => truncate(item.code, 160)),
+    elapsedMs:Math.round(startedAt - scanStartedAt)
+  });
+
+  try {
+    for (const candidate of candidates) {
+      if (candidateValidationAttempted.has(candidate.code)) continue;
+      candidateValidationAttempted.add(candidate.code);
+      debugLog("barcode_candidate_validation_started", {
+        value:truncate(candidate.code, 160),
+        format:candidate.format || (candidate.metadata && candidate.metadata.format) || null,
+        reason:"conflicting_barcode_format"
+      });
+      try {
+        const lookup = await requestProductLookupData(candidate.code);
+        if (attempt !== scanAttempt || restarting) return;
+        const found = !!(
+          lookup &&
+          lookup.ok &&
+          lookup.data &&
+          lookup.data.ok === true &&
+          lookup.data.found === true &&
+          lookup.data.product
+        );
+        debugLog("barcode_candidate_validation_completed", {
+          value:truncate(candidate.code, 160),
+          status:lookup.status,
+          ok:lookup.ok,
+          found:found,
+          elapsedMs:lookup.elapsedMs
+        });
+        if (found) {
+          candidateValidationInFlight = false;
+          const chosenMeta = Object.assign(
+            {},
+            candidate.metadata || {},
+            {
+              rawValue:candidate.rawValue || candidate.code,
+              preloadedLookup:lookup.data
+            }
+          );
+          debugLog("barcode_candidate_validated", {
+            value:truncate(candidate.code, 160),
+            format:chosenMeta.format || null,
+            reason:"liquid_product_match"
+          });
+          stopScan(
+            () => showResult(candidate.code, chosenMeta),
+            "barcode_product_validated"
+          );
+          return;
+        }
+        if (!lookup || !lookup.ok || !lookup.data || lookup.data.ok !== true) {
+          hadLookupError = true;
+        }
+      } catch(error) {
+        hadLookupError = true;
+        debugLog("barcode_candidate_validation_failed", {
+          value:truncate(candidate.code, 160),
+          error:errorDetails(error)
+        });
+      }
+    }
+
+    if (attempt !== scanAttempt || restarting) return;
+    candidateValidationInFlight = false;
+    if (hadLookupError) {
+      debugLog("barcode_conflict_validation_fallback", {
+        value:truncate(currentCode, 160),
+        reason:"lookup_error",
+        elapsedMs:Math.round(performance.now() - startedAt)
+      });
+      stopScan(
+        () => showResult(currentCode, Object.assign({}, currentMeta, { rawValue:currentCode })),
+        "barcode_confirmed_after_validation_error"
+      );
+      return;
+    }
+
+    candidates.forEach(candidate => rejectedCandidates.add(candidate.code));
+    lastCode = null;
+    matchCount = 0;
+    candidateStartedAt = 0;
+    lastDecodedAt = 0;
+    candidateSwitches = 0;
+    candidateFormatConflict = false;
+    statusEl.textContent = "No verified liquid match yet — keep the barcode steady.";
+    debugLog("barcode_conflict_rejected", {
+      candidates:candidates.map(item => truncate(item.code, 160)),
+      reason:"no_verified_liquid_product_match",
+      elapsedMs:Math.round(performance.now() - startedAt)
+    });
+  } finally {
+    if (attempt === scanAttempt && !restarting) {
+      candidateValidationInFlight = false;
+    }
+  }
+}
+
+async function lookupProduct(barcode, metadata){
+  const startedAt = performance.now();
+  const source = "Backbar product lookup";
+  debugLog("product_lookup_started", {
+    barcode:barcode,
+    engine:metadata && metadata.engine ? metadata.engine : "unknown",
+    sources:["Open Food Facts v3", "UPCitemdb trial", "AI web evidence (Haiku, max 2 searches)"],
+    preloaded:!!(metadata && metadata.preloadedLookup)
+  });
+
+  try {
+    let result;
+    if (metadata && metadata.preloadedLookup) {
+      result = {
+        data:metadata.preloadedLookup,
+        status:200,
+        ok:true,
+        elapsedMs:0,
+        preloaded:true
+      };
+    } else {
+      result = await requestProductLookupData(barcode);
+    }
+    const data = result.data;
+    debugLog("product_lookup_http_response", {
+      source:source,
+      barcode:barcode,
+      status:result.status,
+      ok:result.ok,
+      preloaded:!!result.preloaded,
+      elapsedMs:Math.round(performance.now() - startedAt)
     });
 
-    if (!response.ok || !data || data.ok !== true) {
+    if (!result.ok || !data || data.ok !== true) {
       throw new Error((data && data.error) || "Product lookup returned an invalid response");
     }
 
@@ -1401,14 +1848,15 @@ async function lookupProduct(barcode, metadata){
     } else {
       lastResult.lookup = {
         status:"not_found",
+        scope:data.scope || "liquid_stock",
+        outOfScopeProduct:data.outOfScopeProduct || null,
         sources:data.sources || [],
         elapsedMs:Math.round(performance.now() - startedAt)
       };
       debugLog("product_lookup_completed", lastResult.lookup);
-      renderNoProductMatch(barcode, data.sources);
+      renderNoProductMatch(barcode, data.sources, data);
     }
   } catch(error) {
-    clearTimeout(timeoutId);
     lastResult.lookup = {
       status:"error",
       error:errorDetails(error),
