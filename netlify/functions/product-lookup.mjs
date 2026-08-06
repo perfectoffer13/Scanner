@@ -5,6 +5,21 @@ const MAX_TEXT = 6000;
 const AI_LOOKUP_TIMEOUT_MS = 25000;
 const AI_LOOKUP_MODEL = "claude-haiku-4-5-20251001";
 const AI_WEB_SEARCH_MAX_USES = 2;
+const LIQUID_STOCK_KEYWORDS = [
+  "beverage", "drink", "soft drink", "cooldrink", "cola", "soda",
+  "juice", "water", "tonic", "mixer", "energy drink", "beer", "lager",
+  "ale", "cider", "wine", "champagne", "prosecco", "brandy", "cognac",
+  "whisky", "whiskey", "bourbon", "scotch", "vodka", "gin", "rum",
+  "tequila", "mezcal", "liqueur", "liquor", "schnapps", "amaro",
+  "aperitif", "digestif", "spirit", "shot", "cordial", "syrup",
+  "milk", "coffee", "tea", "kombucha", "smoothie", "dairy drink"
+];
+const NON_LIQUID_KEYWORDS = [
+  "butter", "margarine", "spread", "bread", "biscuit", "cookie",
+  "chocolate", "candy", "snack", "cereal", "flour", "rice", "pasta",
+  "soap", "shampoo", "cosmetic", "lotion", "cream", "toothpaste",
+  "battery", "sponge", "diaper", "detergent", "cleaner", "washing powder"
+];
 
 function text(value, maxLength = MAX_TEXT) {
   if (value === null || value === undefined) return "";
@@ -114,7 +129,7 @@ function inferType(...values) {
   for (const [label, words] of types) {
     if (words.some((word) => haystack.includes(word))) return label;
   }
-  return haystack ? "Beverage" : "";
+  return "";
 }
 
 function inferVariant(product, name) {
@@ -253,6 +268,7 @@ function mergeProducts(primary, secondary, barcode) {
     sourceUrls: Array.from(new Set([...(primary.sourceUrls || []), ...(secondary.sourceUrls || [])])),
     matchConfidence: firstText(primary.matchConfidence, secondary.matchConfidence),
     evidence: firstText(primary.evidence, secondary.evidence),
+    scope: firstText(primary.scope, secondary.scope),
   };
   merged.description = merged.description || productDescription(merged, merged);
   return merged;
@@ -265,6 +281,45 @@ function hasUsableProduct(product) {
     product.name &&
     (product.brand || product.category || product.type),
   );
+}
+
+function productSearchText(product) {
+  return [
+    product && product.name,
+    product && product.brand,
+    product && product.type,
+    product && product.variant,
+    product && product.volume,
+    product && product.abv,
+    product && product.category,
+    product && product.description
+  ].map(value => text(value)).filter(Boolean).join(" ").toLowerCase();
+}
+
+function containsKeyword(value, keywords) {
+  const haystack = text(value).toLowerCase();
+  return keywords.some(keyword => haystack.includes(keyword));
+}
+
+function isLiquidStockProduct(product) {
+  if (!product) return false;
+  const haystack = productSearchText(product);
+  if (!haystack || containsKeyword(haystack, NON_LIQUID_KEYWORDS)) return false;
+  return containsKeyword(haystack, LIQUID_STOCK_KEYWORDS);
+}
+
+function outOfScopeProductSummary(product) {
+  if (!product) return null;
+  return {
+    name:firstText(product.name),
+    brand:firstText(product.brand),
+    volume:firstText(product.volume),
+    type:firstText(product.type),
+    category:firstText(product.category),
+    description:firstText(product.description),
+    source:firstText(product.source),
+    matchConfidence:firstText(product.matchConfidence)
+  };
 }
 
 function responseOutputText(data) {
@@ -376,7 +431,7 @@ function normalizeAIProduct(data, barcode, citationUrls) {
     barcode,
     name: fields.name,
     brand: fields.brand,
-    type: firstText(data.type, data.product_type, data.category) || "Unknown item",
+    type: firstText(data.type, data.product_type, data.category),
     variant: fields.variant,
     volume: fields.volume,
     abv: fields.abv,
@@ -390,6 +445,7 @@ function normalizeAIProduct(data, barcode, citationUrls) {
     sourceUrls,
     matchConfidence: confidence,
     evidence: firstText(data.evidence),
+    scope: firstText(data.scope, "unknown"),
   };
 }
 
@@ -426,17 +482,19 @@ async function lookupWithAI(barcode) {
   const model = process.env.ANTHROPIC_BARCODE_MODEL || AI_LOOKUP_MODEL;
   const searchForms = barcodeSearchForms(barcode);
   const input = [
-    "Identify the retail item associated with this exact barcode.",
-    "This can be any category: beverage, food, cleaning product, cosmetics, electronics, or another retail item.",
-    "Search the exact barcode forms in quotes, including retailer, distributor, manufacturer, and product catalog pages.",
+    "Identify the retail item associated with this exact barcode for liquid-stock inventory.",
+    "This app is for bars, pubs, restaurants, bottle shops, and hospitality venues.",
+    "Prioritize spirits, wine, beer, cider, cooldrinks or soft drinks, water, juices, mixers, energy drinks, syrups, and shots.",
+    "Search the exact barcode forms in quotes, including local retailers, distributors, manufacturers, and product catalog pages.",
     "If the barcode is a 12-digit UPC-A, also search its 13-digit GTIN form with a leading zero. If it is a 13-digit GTIN beginning with zero, also search its 12-digit UPC-A form. These are equivalent representations of the same barcode.",
     "Only accept a match when a source explicitly connects one of those equivalent barcode forms to the item.",
     "Do not identify an item from a similar barcode, a product name alone, or general category knowledge.",
-    "For beverages, prioritize the brand, full product name, variant or flavour, container size, ABV, beverage type, and country of origin.",
+    "For beverages, prioritize the brand, full product name, variant or flavour, container size, ABV, beverage type, packaging, and country of origin.",
+    "If the exact barcode belongs to a solid food or non-liquid item, return found:false and scope:out_of_scope instead of returning it as a stock item.",
     "Do not guess missing fields. Use an empty string for unsupported fields.",
     "Return only one JSON object, with no Markdown, using this shape:",
-    '{"found":true,"name":"","brand":"","type":"","variant":"","volume":"","abv":"","packaging":"","country":"","category":"","description":"","image_url":"","source_urls":[],"confidence":"high|medium|low|none","evidence":""}',
-    "If there is no reliable exact-code match, return found:false, empty product fields, confidence:none, and explain why in evidence.",
+    '{"found":true,"scope":"in_scope|out_of_scope|unknown","name":"","brand":"","type":"","variant":"","volume":"","abv":"","packaging":"","country":"","category":"","description":"","image_url":"","source_urls":[],"confidence":"high|medium|low|none","evidence":""}',
+    "If there is no reliable exact-code match, return found:false, scope:unknown, empty product fields, confidence:none, and explain why in evidence.",
     "Barcode forms to search: " + searchForms.map((value) => '"' + value + '"').join(" OR "),
   ].join("\n");
 
@@ -731,6 +789,30 @@ export default async function productLookup(request) {
     return jsonResponse(200, {
       ok: true,
       found: false,
+      scope: "liquid_stock",
+      outOfScopeProduct: null,
+      barcode,
+      sources: attempts,
+      aiLookup: {
+        enabled: String(process.env.AI_BARCODE_LOOKUP_ENABLED || "").toLowerCase() === "true",
+        configured: !!process.env.ANTHROPIC_API_KEY,
+      },
+    });
+  }
+
+  if (!isLiquidStockProduct(product)) {
+    attempts.push({
+      source: "Liquid-stock scope",
+      status: 200,
+      ok: true,
+      inScope: false,
+      reason: "verified_non_liquid_or_out_of_scope",
+    });
+    return jsonResponse(200, {
+      ok: true,
+      found: false,
+      scope: "liquid_stock",
+      outOfScopeProduct: outOfScopeProductSummary(product),
       barcode,
       sources: attempts,
       aiLookup: {
@@ -743,6 +825,7 @@ export default async function productLookup(request) {
   return jsonResponse(200, {
     ok: true,
     found: true,
+    scope: "liquid_stock",
     barcode,
     product,
     sources: attempts,
