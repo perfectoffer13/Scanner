@@ -383,9 +383,132 @@ function focusState(capabilities, settings){
       : null
   };
 }
+const MANUAL_FOCUS_INTERVAL_MS = 650;
+const MANUAL_FOCUS_DISTANCE_PRESETS = [0.12,0.18,0.25,0.35,0.5,0.75,1,1.5,2.5,4,0];
+let nativeManualFocusTimer = null;
+let nativeManualFocusValues = [];
+let nativeManualFocusIndex = 0;
+let nativeManualFocusGeneration = 0;
+let nativeManualFocusBusy = false;
+
+function manualFocusDistances(capabilities){
+  const range = capabilities && capabilities.focusDistance;
+  if (!range || typeof range !== "object") return [];
+  const min = Number(range.min);
+  const max = Number(range.max);
+  const step = Number(range.step);
+  if (!Number.isFinite(min) || !Number.isFinite(max) || max < min) return [];
+
+  // Some Android drivers report an unusably large maximum. Barcode work is
+  // normally done within a few metres, so keep the sweep in a practical range.
+  const upper = Math.min(max, 8);
+  const candidates = [min].concat(MANUAL_FOCUS_DISTANCE_PRESETS, [upper]);
+  const values = [];
+  candidates.forEach(candidate => {
+    if (!Number.isFinite(candidate)) return;
+    const clamped = Math.max(min, Math.min(upper, candidate));
+    const snapped = step > 0 && step < 1
+      ? Math.round(clamped / step) * step
+      : clamped;
+    const value = Number(snapped.toFixed(4));
+    if (!values.some(existing => Math.abs(existing - value) < 0.0001)) {
+      values.push(value);
+    }
+  });
+  return values;
+}
+function applyNativeManualFocus(distance, reason, generation){
+  const track = nativeTrack;
+  if (!track || generation !== nativeManualFocusGeneration || nativeManualFocusBusy) return;
+  nativeManualFocusBusy = true;
+  const constraints = {
+    advanced:[{ focusMode:"manual", focusDistance:distance }]
+  };
+  Promise.resolve().then(() => track.applyConstraints(constraints)).then(() => {
+    if (track === nativeTrack && generation === nativeManualFocusGeneration) {
+      logThrottled("manual_focus_applied", {
+        engine:"native",
+        reason:reason,
+        focusDistance:distance
+      }, 1200);
+    }
+  }).catch(error => {
+    if (track === nativeTrack && generation === nativeManualFocusGeneration) {
+      logThrottled("manual_focus_failed", {
+        engine:"native",
+        reason:reason,
+        focusDistance:distance,
+        error:errorDetails(error)
+      }, 5000);
+    }
+  }).finally(() => {
+    nativeManualFocusBusy = false;
+  });
+}
+function applyNextNativeManualFocus(reason, generation){
+  if (!nativeTrack || generation !== nativeManualFocusGeneration || !nativeManualFocusValues.length) return;
+  const distance = nativeManualFocusValues[nativeManualFocusIndex % nativeManualFocusValues.length];
+  nativeManualFocusIndex++;
+  applyNativeManualFocus(distance, reason, generation);
+}
+function startNativeManualFocusAssist(capabilities, reason){
+  const values = manualFocusDistances(capabilities);
+  const hint = document.getElementById("tap-hint");
+  if (!values.length) {
+    if (hint) hint.textContent = "Manual focus is available, but its range was not reported";
+    logThrottled("manual_focus_assist_unavailable", {
+      engine:"native",
+      reason:reason,
+      focusDistance:capabilities && capabilities.focusDistance
+    }, 5000);
+    return;
+  }
+
+  if (nativeManualFocusTimer === null) {
+    nativeManualFocusValues = values;
+    nativeManualFocusIndex = 0;
+    nativeManualFocusGeneration++;
+    const generation = nativeManualFocusGeneration;
+    nativeManualFocusTimer = setInterval(() => {
+      applyNextNativeManualFocus("sweep", generation);
+    }, MANUAL_FOCUS_INTERVAL_MS);
+    debugLog("manual_focus_assist_started", {
+      engine:"native",
+      reason:reason,
+      focusDistances:values,
+      intervalMs:MANUAL_FOCUS_INTERVAL_MS
+    });
+  } else {
+    nativeManualFocusIndex = 0;
+    logThrottled("manual_focus_assist_restarted", {
+      engine:"native",
+      reason:reason
+    }, 3000);
+  }
+
+  if (hint) hint.textContent = "Focus assist active — hold the barcode steady";
+  applyNextNativeManualFocus(reason, nativeManualFocusGeneration);
+}
+function stopNativeManualFocusAssist(reason){
+  if (nativeManualFocusTimer !== null) {
+    clearInterval(nativeManualFocusTimer);
+    nativeManualFocusTimer = null;
+    debugLog("manual_focus_assist_stopped", {
+      engine:"native",
+      reason:reason,
+      nextIndex:nativeManualFocusIndex
+    });
+  }
+  nativeManualFocusGeneration++;
+  nativeManualFocusValues = [];
+  nativeManualFocusIndex = 0;
+  nativeManualFocusBusy = false;
+}
 function requestFocus(engine, capabilities, settings, applyConstraints, reason){
   const state = focusState(capabilities, settings);
   const hint = document.getElementById("tap-hint");
+  const continuousSupported = !state.supportedModes.length ||
+    state.supportedModes.indexOf("continuous") !== -1;
   debugLog("focus_capabilities_detected", {
     engine:engine,
     reason:reason,
@@ -394,7 +517,7 @@ function requestFocus(engine, capabilities, settings, applyConstraints, reason){
     focusDistance:state.focusDistance
   });
 
-  if (state.currentMode === "continuous") {
+  if (state.currentMode === "continuous" && continuousSupported) {
     if (hint) hint.textContent = "Autofocus is active";
     debugLog("focus_already_active", {
       engine:engine,
@@ -404,15 +527,26 @@ function requestFocus(engine, capabilities, settings, applyConstraints, reason){
     return;
   }
 
-  if (state.supportedModes.length && state.supportedModes.indexOf("continuous") === -1) {
-    if (hint) hint.textContent = "This camera does not expose continuous autofocus";
-    logThrottled("focus_mode_unsupported", {
-      engine:engine,
-      reason:reason,
-      requested:"continuous",
-      supported:state.supportedModes,
-      currentMode:state.currentMode
-    }, 5000);
+  if (state.supportedModes.length && !continuousSupported) {
+    if (engine === "native" && state.supportedModes.indexOf("manual") !== -1) {
+      debugLog("focus_manual_fallback_selected", {
+        engine:engine,
+        reason:reason,
+        supported:state.supportedModes,
+        currentMode:state.currentMode
+      });
+      startNativeManualFocusAssist(capabilities, reason);
+    } else {
+      if (hint) hint.textContent = "This camera does not expose continuous autofocus";
+      logThrottled("focus_mode_unsupported", {
+        engine:engine,
+        reason:reason,
+        requested:"continuous",
+        supported:state.supportedModes,
+        currentMode:state.currentMode,
+        manualAvailable:state.supportedModes.indexOf("manual") !== -1
+      }, 5000);
+    }
     return;
   }
 
@@ -672,6 +806,22 @@ function startNative(){
     if (!tracks.length) throw new Error("Camera stream returned no video track");
     nativeTrack = tracks[0];
     nativeVideo.srcObject = stream;
+    try {
+      const playPromise = nativeVideo.play();
+      if (playPromise && typeof playPromise.catch === "function") {
+        playPromise.catch(error => {
+          debugLog("native_video_play_failed", {
+            engine:"native",
+            error:errorDetails(error)
+          });
+        });
+      }
+    } catch(error) {
+      debugLog("native_video_play_failed", {
+        engine:"native",
+        error:errorDetails(error)
+      });
+    }
     debugLog("camera_stream_ready", {
       engine:"native",
       trackCount:tracks.length,
@@ -726,7 +876,10 @@ function startNative(){
 
 function nativeLoop(ts){
   if (!nativeDetector) return;
-  if (ts - lastDetectAt > 180 && nativeVideo.readyState >= 2) {
+  if (ts - lastDetectAt > 180 &&
+      nativeVideo.readyState >= 2 &&
+      nativeVideo.videoWidth > 0 &&
+      nativeVideo.videoHeight > 0) {
     lastDetectAt = ts;
     const detector = nativeDetector;
     detector.detect(nativeVideo).then(codes => {
@@ -777,6 +930,7 @@ document.getElementById("video-region").addEventListener("click", () => {
 
 
 function stopNative(){
+  stopNativeManualFocusAssist("stream_stopped");
   if (nativeLoopId) cancelAnimationFrame(nativeLoopId);
   nativeLoopId = null;
   nativeDetector = null;
