@@ -26,8 +26,7 @@ p.sub{color:var(--muted);font-size:13.5px;margin:0 0 26px;}
 .scan-top button{background:none;border:none;color:var(--text);font-size:24px;}
 .scan-top-actions{display:flex;align-items:center;gap:8px;}
 .torch-btn{background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:6px 12px;font-size:13px;}
-.photo-btn{background:var(--panel)!important;border:1px solid var(--line)!important;border-radius:8px!important;padding:7px 10px!important;font-size:12px!important;color:var(--text)!important;white-space:nowrap;}
-.photo-btn:active{transform:translateY(1px);}
+
 .torch-btn.on{background:var(--brass);color:#1c1300;border-color:var(--brass);}
 
 .video-region{position:relative;flex:1;overflow:hidden;background:#000;}
@@ -94,7 +93,6 @@ p.sub{color:var(--muted);font-size:13.5px;margin:0 0 26px;}
   <div class="scan-top">
     <button id="btn-close">&times;</button>
     <div class="scan-top-actions">
-      <button class="photo-btn" id="btn-photo-scan">Photo scan</button>
       <button class="torch-btn" id="btn-torch" style="display:none">Torch</button>
     </div>
   </div>
@@ -107,8 +105,6 @@ p.sub{color:var(--muted);font-size:13.5px;margin:0 0 26px;}
   <div class="status" id="scan-status">Looking for a barcode…</div>
 </div>
 
-<input id="photo-input" type="file" accept="image/*" capture="environment">
-<div id="photo-reader" style="display:none"></div>
 
 <div class="result-card" id="result-card">
   <div class="result-inner">
@@ -147,15 +143,14 @@ const resultCard = document.getElementById("result-card");
 const statusEl = document.getElementById("scan-status");
 const nativeVideo = document.getElementById("native-video");
 const readerDiv = document.getElementById("reader");
-const photoInput = document.getElementById("photo-input");
 const diagnosticNote = document.getElementById("diagnostic-note");
 const diagnosticsCard = document.getElementById("diagnostics-card");
 const diagnosticsOutput = document.getElementById("diagnostics-output");
 
 const USE_NATIVE = ("BarcodeDetector" in window);
 document.getElementById("engine-note").textContent = USE_NATIVE
-  ? "Using your browser's built-in scanner for faster, sharper focus."
-  : "Using the fallback scanner (your browser doesn't support the fast native one).";
+  ? "Using continuous autofocus only."
+  : "Using the fallback scanner with continuous autofocus only.";
 
 const DIAGNOSTIC_SCHEMA_VERSION = 1;
 const DIAGNOSTIC_KEY = "backbar_identify_diagnostics_v1";
@@ -613,8 +608,6 @@ let nativeDetectErrorCount = 0, fallbackDecodeErrorCount = 0;
 let lastResult = null;
 
 document.getElementById("btn-start").onclick = startScan;
-document.getElementById("btn-photo-scan").onclick = requestPhotoScan;
-photoInput.addEventListener("change", handlePhotoSelected);
 document.getElementById("btn-close").onclick = () => stopScan(null, "user_closed");
 document.getElementById("btn-scan-again").onclick = () => { resultCard.classList.remove("show"); startScan(); };
 document.getElementById("btn-report").onclick = reportCurrentResult;
@@ -1325,140 +1318,6 @@ async function lookupProduct(barcode, metadata){
     renderNoProductMatch(barcode);
   }
 }
-function loadPhotoImage(file){
-  return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file);
-    const image = new Image();
-    image.onload = () => {
-      URL.revokeObjectURL(url);
-      resolve(image);
-    };
-    image.onerror = () => {
-      URL.revokeObjectURL(url);
-      reject(new Error("The camera photo could not be opened"));
-    };
-    image.src = url;
-  });
-}
-function createPhotoDetector(){
-  if (!("BarcodeDetector" in window)) return null;
-  const formats = ["ean_13","ean_8","upc_a","upc_e","code_128","code_39","qr_code"];
-  try {
-    debugLog("photo_decoder_ready", { engine:"native-photo", formats:formats });
-    return new BarcodeDetector({ formats:formats });
-  } catch(error) {
-    debugLog("photo_decoder_format_init_failed", {
-      engine:"native-photo",
-      error:errorDetails(error)
-    });
-    try {
-      debugLog("photo_decoder_ready", { engine:"native-photo", formats:"browser_default" });
-      return new BarcodeDetector();
-    } catch(fallbackError) {
-      debugLog("photo_decoder_init_failed", {
-        engine:"native-photo",
-        error:errorDetails(fallbackError)
-      });
-      return null;
-    }
-  }
-}
-function showPhotoProcessing(){
-  resultCard.classList.add("show");
-  document.getElementById("r-barcode").textContent = "Photo scan";
-  document.getElementById("r-format").textContent = "";
-  document.getElementById("r-body").textContent = "Reading the photo with the phone's native camera focus…";
-}
-function showPhotoFailure(message){
-  document.getElementById("r-barcode").textContent = "No barcode detected";
-  document.getElementById("r-format").textContent = "Photo scan";
-  const body = document.getElementById("r-body");
-  body.innerHTML = "";
-  const note = document.createElement("div");
-  note.className = "barcode-note";
-  note.textContent = message;
-  body.appendChild(note);
-}
-function requestPhotoScan(){
-  debugLog("photo_scan_requested", { reason:"native_camera_capture" });
-  photoInput.value = "";
-  photoInput.click();
-}
-function handlePhotoSelected(event){
-  const file = event.target.files && event.target.files[0];
-  if (!file) return;
-  debugLog("photo_scan_file_received", {
-    type:file.type || "unknown",
-    size:file.size || 0,
-    name:truncate(file.name || "", 120)
-  });
-  const finish = () => decodePhotoFile(file);
-  if (scanWrap.classList.contains("show")) {
-    stopScan(finish, "photo_scan_requested");
-  } else {
-    finish();
-  }
-}
-async function decodePhotoFile(file){
-  showPhotoProcessing();
-  debugLog("photo_scan_started", {
-    type:file.type || "unknown",
-    size:file.size || 0
-  });
-  try {
-    let decoded = "";
-    let format = null;
-    let engine = "native-photo";
-
-    if (USE_NATIVE) {
-      const detector = createPhotoDetector();
-      if (!detector) throw new Error("BarcodeDetector is unavailable for photo scanning");
-      const image = await loadPhotoImage(file);
-      const codes = await detector.detect(image);
-      if (codes && codes.length) {
-        decoded = codes[0].rawValue || "";
-        format = codes[0].format || null;
-      }
-    } else {
-      engine = "html5-qrcode-photo";
-      if (typeof Html5Qrcode === "undefined") {
-        throw new Error("The fallback scanner library is unavailable");
-      }
-      const photoScanner = new Html5Qrcode("photo-reader");
-      try {
-        decoded = await photoScanner.scanFile(file, true);
-      } finally {
-        try { photoScanner.clear(); } catch(error) {
-          debugLog("photo_scanner_clear_failed", { error:errorDetails(error) });
-        }
-      }
-    }
-
-    if (!decoded || !String(decoded).trim()) {
-      debugLog("photo_barcode_not_found", { engine:engine });
-      showPhotoFailure("The native camera photo did not contain a readable barcode. Try filling the frame with only the barcode.");
-      return;
-    }
-
-    debugLog("photo_barcode_detected", {
-      engine:engine,
-      format:format,
-      rawValue:truncate(decoded, 500)
-    });
-    const normalized = String(decoded).trim();
-    showResult(normalized, {
-      engine:engine,
-      format:format,
-      rawValue:String(decoded)
-    });
-  } catch(error) {
-    debugLog("photo_scan_failed", {
-      error:errorDetails(error)
-    });
-    showPhotoFailure("Photo scanning failed: " + (error.message || error));
-  }
-}
-
 function escapeHtml(s){ return (s||"").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 })();
 </script>
