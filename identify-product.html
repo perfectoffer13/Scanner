@@ -147,7 +147,7 @@ p.sub{color:var(--muted);font-size:13.5px;margin:0 0 26px;}
 (function(){
 "use strict";
 
-const APP_VERSION = "0.4.1";
+const APP_VERSION = "0.4.2";
 const appVersionEl = document.getElementById("app-version");
 if (appVersionEl) appVersionEl.textContent = "Version " + APP_VERSION;
 document.title = "Barcode Scanner Test · v" + APP_VERSION;
@@ -395,7 +395,7 @@ function focusState(capabilities, settings){
       : null
   };
 }
-function requestFocus(engine, capabilities, settings, applyConstraints, reason){
+function requestFocus(engine, capabilities, settings, applyConstraints, reason, readback){
   const state = focusState(capabilities, settings);
   const hint = document.getElementById("tap-hint");
   const continuousSupported = !state.supportedModes.length ||
@@ -405,29 +405,21 @@ function requestFocus(engine, capabilities, settings, applyConstraints, reason){
     reason:reason,
     supportedModes:state.supportedModes,
     currentMode:state.currentMode,
-    focusDistance:state.focusDistance
+    focusDistance:state.focusDistance,
+    continuousSupported:continuousSupported
   });
 
-  if (state.currentMode === "continuous") {
-    if (hint) hint.textContent = "Autofocus is active";
-    debugLog("focus_already_active", {
-      engine:engine,
-      reason:reason,
-      mode:"continuous"
-    });
-    return;
-  }
-
-  if (!continuousSupported) {
-    if (hint) hint.textContent = "Continuous autofocus is unavailable on this camera";
-    logThrottled("focus_mode_unsupported", {
+  // Some Android browser builds report a continuous current setting while
+  // incorrectly omitting "continuous" from the capability list. Treat that
+  // as a diagnostic mismatch, not as permission to fall back to manual focus.
+  if (state.supportedModes.length && !continuousSupported) {
+    logThrottled("focus_capability_mismatch", {
       engine:engine,
       reason:reason,
       requested:"continuous",
       supported:state.supportedModes,
       currentMode:state.currentMode
     }, 5000);
-    return;
   }
 
   if (!applyConstraints) {
@@ -439,68 +431,132 @@ function requestFocus(engine, capabilities, settings, applyConstraints, reason){
     return;
   }
 
+  if (hint) hint.textContent = "Reasserting autofocus…";
   debugLog("focus_request_started", {
     engine:engine,
     reason:reason,
-    requested:"continuous"
+    requested:"continuous",
+    strategy:"exact_then_ideal"
   });
-  try {
-    const result = applyConstraints({
-      advanced:[{ focusMode:{ exact:"continuous" } }]
+
+  function recordSuccess(strategy){
+    let verification = null;
+    try { verification = readback ? readback() : null; } catch(error) {}
+    const verifiedMode = verification && verification.settings
+      ? verification.settings.focusMode || null
+      : null;
+    const verified = !verifiedMode || verifiedMode === "continuous";
+    if (hint) hint.textContent = verified
+      ? "Autofocus is active"
+      : "Autofocus needs rechecking";
+    debugLog(verified ? "focus_request_succeeded" : "focus_request_unverified", {
+      engine:engine,
+      reason:reason,
+      mode:"continuous",
+      strategy:strategy,
+      verifiedMode:verifiedMode,
+      supportedModes:state.supportedModes
     });
-    Promise.resolve(result).then(() => {
-      if (hint) hint.textContent = "Autofocus is active";
-      debugLog("focus_request_succeeded", {
-        engine:engine,
-        reason:reason,
-        mode:"continuous"
-      });
-    }).catch(error => {
-      if (hint) hint.textContent = "Continuous autofocus could not be enabled";
-      debugLog("focus_request_failed", {
-        engine:engine,
-        reason:reason,
-        requested:"continuous",
-        error:errorDetails(error)
-      });
-    });
-  } catch(error) {
+  }
+
+  function recordFailure(error, strategy){
     if (hint) hint.textContent = "Continuous autofocus could not be enabled";
     debugLog("focus_request_failed", {
       engine:engine,
       reason:reason,
       requested:"continuous",
+      strategy:strategy,
+      supportedModes:state.supportedModes,
+      currentMode:state.currentMode,
       error:errorDetails(error)
     });
   }
-}
 
+  function runRequest(constraints, strategy, retry){
+    let result;
+    try {
+      result = applyConstraints(constraints);
+    } catch(error) {
+      if (retry) {
+        debugLog("focus_request_retry", {
+          engine:engine,
+          reason:reason,
+          requested:"continuous",
+          failedStrategy:strategy,
+          retryStrategy:retry.strategy,
+          error:errorDetails(error)
+        });
+        runRequest(retry.constraints, retry.strategy, null);
+      } else {
+        recordFailure(error, strategy);
+      }
+      return;
+    }
+
+    Promise.resolve(result).then(() => {
+      recordSuccess(strategy);
+    }).catch(error => {
+      if (retry) {
+        debugLog("focus_request_retry", {
+          engine:engine,
+          reason:reason,
+          requested:"continuous",
+          failedStrategy:strategy,
+          retryStrategy:retry.strategy,
+          error:errorDetails(error)
+        });
+        runRequest(retry.constraints, retry.strategy, null);
+      } else {
+        recordFailure(error, strategy);
+      }
+    });
+  }
+
+  // Only continuous autofocus is attempted. The ideal retry accommodates
+  // devices whose browser capability report is incomplete or contradictory.
+  runRequest(
+    { advanced:[{ focusMode:{ exact:"continuous" } }] },
+    "exact",
+    {
+      constraints:{ advanced:[{ focusMode:{ ideal:"continuous" } }] },
+      strategy:"ideal_retry"
+    }
+  );
+}
 function requestNativeFocus(reason){
-  if (!nativeTrack) return;
-  const snapshot = trackSnapshot(nativeTrack) || {};
+  const track = nativeTrack;
+  if (!track) return;
+  const snapshot = trackSnapshot(track) || {};
   requestFocus(
     "native",
     snapshot.capabilities || {},
     snapshot.settings || {},
-    constraints => nativeTrack.applyConstraints(constraints),
-    reason
+    constraints => track.applyConstraints(constraints),
+    reason,
+    () => trackSnapshot(track)
   );
 }
 function requestFallbackFocus(reason){
-  if (!fallbackScanner) return;
+  const scanner = fallbackScanner;
+  if (!scanner) return;
   try {
-    const capabilities = fallbackScanner.getRunningTrackCapabilities
-      ? fallbackScanner.getRunningTrackCapabilities()
+    const capabilities = scanner.getRunningTrackCapabilities
+      ? scanner.getRunningTrackCapabilities()
       : {};
-    const settings = fallbackScanner.getRunningTrackSettings
-      ? fallbackScanner.getRunningTrackSettings()
+    const settings = scanner.getRunningTrackSettings
+      ? scanner.getRunningTrackSettings()
       : {};
     requestFocus(
       "html5-qrcode-fallback",
       capabilities,
       settings,
-      constraints => fallbackScanner.applyVideoConstraints(constraints),
-      reason
+      constraints => scanner.applyVideoConstraints(constraints),
+      reason,
+      () => ({
+        settings:scanner.getRunningTrackSettings
+          ? scanner.getRunningTrackSettings()
+          : {}
+      })
     );
   } catch(error) {
     debugLog("focus_details_failed", {
@@ -509,6 +565,30 @@ function requestFallbackFocus(reason){
       error:errorDetails(error)
     });
   }
+}
+
+function clearFocusReassertion(){
+  if (focusReassertTimer) clearTimeout(focusReassertTimer);
+  focusReassertTimer = null;
+}
+function scheduleFocusReassertion(reason, delayMs){
+  clearFocusReassertion();
+  if (!nativeTrack && !fallbackScanner) return;
+  const engine = nativeTrack ? "native" : "html5-qrcode-fallback";
+  const delay = Number.isFinite(delayMs) ? delayMs : 4500;
+  debugLog("focus_reassert_scheduled", {
+    engine:engine,
+    reason:reason,
+    delayMs:delay
+  });
+  focusReassertTimer = setTimeout(() => {
+    focusReassertTimer = null;
+    if (nativeTrack) requestNativeFocus(reason + "_reassert");
+    else if (fallbackScanner) requestFallbackFocus(reason + "_reassert");
+    if (nativeTrack || fallbackScanner) {
+      scheduleFocusReassertion("periodic", 4500);
+    }
+  }, delay);
 }
 
 function environmentSnapshot(){
@@ -619,6 +699,7 @@ const REQUIRED_MATCHES = 2;
 
 let nativeStream = null, nativeTrack = null, nativeDetector = null, nativeLoopId = null, lastDetectAt = 0;
 let fallbackScanner = null;
+let focusReassertTimer = null;
 let restarting = false;
 let scanAttempt = 0, scanStartedAt = 0;
 let nativeDetectErrorCount = 0, fallbackDecodeErrorCount = 0;
@@ -713,6 +794,7 @@ function startNative(){
     });
 
     requestNativeFocus("startup");
+    scheduleFocusReassertion("native_startup", 1200);
 
     try {
       const caps = nativeTrack.getCapabilities ? nativeTrack.getCapabilities() : {};
@@ -814,6 +896,7 @@ document.getElementById("video-region").addEventListener("click", () => {
 
 
 function stopNative(){
+  clearFocusReassertion();
   if (nativeLoopId) cancelAnimationFrame(nativeLoopId);
   nativeLoopId = null;
   nativeDetector = null;
@@ -893,6 +976,7 @@ function startFallback(){
         capabilities:pick(caps, ["width","height","frameRate","facingMode","focusMode","focusDistance","torch","zoom"])
       });
       requestFallbackFocus("startup");
+      scheduleFocusReassertion("fallback_startup", 1200);
       if (caps && caps.torch) {
         const torchBtn = document.getElementById("btn-torch");
         torchBtn.style.display = "inline-block";
@@ -925,6 +1009,7 @@ function onFallbackDecodeFailure(message){
 }
 
 function stopFallback(callback){
+  clearFocusReassertion();
   if (fallbackScanner) {
     const scanner = fallbackScanner;
     debugLog("camera_stream_stopping", { engine:"html5-qrcode-fallback" });
