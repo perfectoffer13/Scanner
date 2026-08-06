@@ -85,7 +85,7 @@ p.sub{color:var(--muted);font-size:13.5px;margin:0 0 26px;}
 
 <div id="app">
   <h1>Barcode Scanner Test</h1>
-  <p class="sub">Scan to see the exact value encoded in the barcode.</p>
+  <p class="sub">Scan any barcode to see the exact value, then check broad product sources and optional AI evidence.</p>
   <button class="btn" id="btn-start">Scan Barcode</button>
   <div class="engine-note" id="engine-note"></div>
   <div class="diag-tools">
@@ -1026,7 +1026,7 @@ function showResult(barcode, metadata){
   document.getElementById("r-barcode").textContent = rawValue;
   document.getElementById("r-format").textContent = "Format: " + format;
   document.getElementById("r-body").innerHTML =
-    "<div class=\"barcode-meta\">Searching public product databases…</div>" +
+    "<div class=\"barcode-meta\">Checking broad product sources and optional AI evidence…</div>" +
     "<div class=\"barcode-note\">The decoded barcode remains shown above while the online match is checked.</div>";
   resultCard.classList.add("show");
 
@@ -1125,7 +1125,8 @@ function renderProductMatch(product){
     ["Alcohol strength", product.abv],
     ["Packaging", product.packaging],
     ["Country / origin", product.country],
-    ["Category", product.category]
+    ["Category", product.category],
+    ["Match confidence", product.matchConfidence || "Catalog record"]
   ].forEach(([label, value]) => addProductField(grid, label, value));
   body.appendChild(grid);
 
@@ -1138,8 +1139,36 @@ function renderProductMatch(product){
 
   const sourceNote = document.createElement("div");
   sourceNote.className = "product-source-note";
-  sourceNote.textContent = "Barcode: " + product.barcode + " · Source: " + (product.source || "unknown");
-  body.appendChild(sourceNote);
+  sourceNote.textContent = "Barcode: " + product.barcode + " · Source: " + (product.source || "unknown");  body.appendChild(sourceNote);
+
+
+  if (product.matchConfidence || product.evidence) {
+    const evidenceNote = document.createElement("div");
+    evidenceNote.className = "product-source-note";
+    evidenceNote.textContent =
+      (product.matchConfidence ? "Match confidence: " + product.matchConfidence : "") +
+      (product.matchConfidence && product.evidence ? " · " : "") +
+      (product.evidence ? "Evidence: " + product.evidence : "");
+    body.appendChild(evidenceNote);
+  }
+
+  if (Array.isArray(product.sourceUrls) && product.sourceUrls.length) {
+    const evidenceLinks = document.createElement("div");
+    evidenceLinks.className = "product-source-note";
+    evidenceLinks.textContent = "Evidence links:";
+    product.sourceUrls.slice(0, 5).forEach((url, index) => {
+      if (!/^https?:\/\//i.test(url)) return;
+      const link = document.createElement("a");
+      link.className = "lookup-link";
+      link.href = url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = "Source " + (index + 1);
+      evidenceLinks.appendChild(document.createTextNode(" "));
+      evidenceLinks.appendChild(link);
+    });
+    body.appendChild(evidenceLinks);
+  }
 
   if (product.sourceRecordUrl && /^https?:\/\//i.test(product.sourceRecordUrl)) {
     const link = document.createElement("a");
@@ -1159,7 +1188,7 @@ function renderNoProductMatch(barcode, sources){
   const message = document.createElement("div");
   message.className = "barcode-note";
   message.textContent =
-    "The barcode was read correctly, but no product record was found in the connected databases.";
+    "The barcode was read correctly, but no verified product record was found in the connected sources.";
   body.appendChild(message);
 
   const note = document.createElement("div");
@@ -1174,6 +1203,25 @@ function renderNoProductMatch(barcode, sources){
     sourceNote.textContent = "Sources checked: " + sources.map((item) => item.source).filter(Boolean).join(" + ");
     body.appendChild(sourceNote);
   }
+
+  const aiSource = Array.isArray(sources)
+    ? sources.find((item) => item && item.source === "AI web evidence")
+    : null;
+  if (aiSource && aiSource.configured === false) {
+    const aiNote = document.createElement("div");
+    aiNote.className = "product-source-note";
+    aiNote.textContent = "AI evidence fallback is ready in the code but is not enabled on this deployment yet.";
+    body.appendChild(aiNote);
+  }
+
+  const webSearchLink = document.createElement("a");
+  webSearchLink.className = "lookup-link";
+  webSearchLink.href = "https://www.google.com/search?q=" + encodeURIComponent('"' + barcode + '"');
+  webSearchLink.target = "_blank";
+  webSearchLink.rel = "noopener noreferrer";
+  webSearchLink.textContent = "Search this exact barcode on the web";
+  body.appendChild(webSearchLink);
+
 }
 
 function renderProductLookupError(){
@@ -1192,7 +1240,7 @@ async function lookupProduct(barcode, metadata){
   debugLog("product_lookup_started", {
     barcode:barcode,
     engine:metadata && metadata.engine ? metadata.engine : "unknown",
-    sources:["Open Food Facts v3", "UPCitemdb trial"]
+    sources:["Open Food Facts v3", "UPCitemdb trial", "AI web evidence (optional)"]
   });
 
   let controller = null;
@@ -1201,7 +1249,7 @@ async function lookupProduct(barcode, metadata){
     if ("AbortController" in window) controller = new AbortController();
     timeoutId = setTimeout(() => {
       if (controller) controller.abort();
-    }, 18000);
+    }, 30000);
 
     const response = await fetch(
       PRODUCT_LOOKUP_ENDPOINT + "?barcode=" + encodeURIComponent(barcode),
@@ -1238,6 +1286,9 @@ async function lookupProduct(barcode, metadata){
         volume:truncate(data.product.volume || "", 80),
         abv:truncate(data.product.abv || "", 80),
         hasSourceImage:!!data.product.sourceImageUrl,
+        matchConfidence:truncate(data.product.matchConfidence || "", 40),
+        evidence:truncate(data.product.evidence || "", 320),
+        sourceUrlCount:Array.isArray(data.product.sourceUrls) ? data.product.sourceUrls.length : 0,
         elapsedMs:Math.round(performance.now() - startedAt)
       };
       debugLog("product_lookup_completed", Object.assign({}, lastResult.lookup, {
