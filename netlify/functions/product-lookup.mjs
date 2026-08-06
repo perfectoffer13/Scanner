@@ -139,7 +139,7 @@ function productDescription(product, fields) {
 
 function normalizeOpenFoodFacts(data, barcode) {
   const product = data?.product;
-  if (!product || Number(data?.status) !== 1) return null;
+  if (!product) return null;
 
   const name = firstText(
     product.product_name_en,
