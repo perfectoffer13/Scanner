@@ -438,7 +438,7 @@ async function lookupWithAI(barcode) {
       },
       body: JSON.stringify({
         model: process.env.OPENAI_BARCODE_MODEL || AI_LOOKUP_MODEL,
-        tools: [{ type: "web_search" }],
+        tools: [{ type: "web_search_preview", search_context_size: "high" }],
         input,
         max_output_tokens: 900,
       }),
