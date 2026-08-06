@@ -56,6 +56,14 @@ p.sub{color:var(--muted);font-size:13.5px;margin:0 0 26px;}
 .product-match-title{font-size:18px;font-weight:700;margin-top:8px;}
 .product-match-brand{color:var(--muted);font-size:14px;margin-top:3px;}
 .product-match-detail{color:var(--muted);font-size:13px;margin-top:9px;line-height:1.4;}
+.product-info-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:16px;}
+.product-info-field{background:#141210;border:1px solid var(--line);border-radius:8px;padding:9px;text-align:left;min-width:0;}
+.product-info-label{color:var(--muted);font-size:10px;letter-spacing:.06em;text-transform:uppercase;margin-bottom:3px;}
+.product-info-value{color:var(--text);font-size:13px;line-height:1.3;overflow-wrap:anywhere;}
+.product-description{margin-top:14px;padding:11px;border-left:3px solid var(--brass);background:#141210;color:var(--text);font-size:13px;line-height:1.45;}
+.product-source-note{color:var(--muted);font-size:11px;line-height:1.4;margin-top:12px;}
+.source-image-label{align-self:stretch;color:#665d50;font-size:11px;text-align:left;margin-bottom:8px;}
+.product-image-frame{flex-direction:column;}
 .lookup-link{display:inline-block;color:var(--brass-soft);font-size:13px;margin-top:13px;text-decoration:none;}
 .lookup-link:hover{text-decoration:underline;}
 #photo-input{display:none;}
@@ -1032,290 +1040,233 @@ function showResult(barcode, metadata){
   lookupProduct(barcode, meta);
 }
 
-function findImageUrl(value, depth){
-  if (!value || depth > 5) return "";
-  if (typeof value === "string") {
-    const candidate = value.trim();
-    return /^https?:\/\//i.test(candidate) ? candidate : "";
+const PRODUCT_LOOKUP_ENDPOINT = "/.netlify/functions/product-lookup";
+
+function addProductField(grid, label, value){
+  const field = document.createElement("div");
+  field.className = "product-info-field";
+
+  const fieldLabel = document.createElement("div");
+  fieldLabel.className = "product-info-label";
+  fieldLabel.textContent = label;
+
+  const fieldValue = document.createElement("div");
+  fieldValue.className = "product-info-value";
+  fieldValue.textContent = value || "Not supplied";
+
+  field.appendChild(fieldLabel);
+  field.appendChild(fieldValue);
+  grid.appendChild(field);
+}
+
+function renderProductImage(body, product){
+  const frame = document.createElement("div");
+  frame.className = "product-image-frame";
+
+  const label = document.createElement("div");
+  label.className = "source-image-label";
+  label.textContent = product.sourceImageUrl
+    ? "Source image — standardization comes in Phase 3"
+    : "Studio image slot — Phase 3";
+  frame.appendChild(label);
+
+  if (product.sourceImageUrl && /^https?:\/\//i.test(product.sourceImageUrl)) {
+    const image = document.createElement("img");
+    image.src = product.sourceImageUrl;
+    image.alt = product.name || "Source product image";
+    image.loading = "eager";
+    image.referrerPolicy = "no-referrer";
+    image.onerror = () => {
+      debugLog("product_image_load_failed", {
+        source:product.source || "unknown",
+        barcode:product.barcode,
+        imageUrl:truncate(product.sourceImageUrl, 500)
+      });
+      frame.innerHTML = "";
+      const missingLabel = document.createElement("div");
+      missingLabel.className = "source-image-label";
+      missingLabel.textContent = "Source image could not be loaded — Phase 3 studio image slot";
+      frame.appendChild(missingLabel);
+    };
+    frame.appendChild(image);
+  } else {
+    const missing = document.createElement("div");
+    missing.className = "product-image-missing";
+    missing.textContent = "No source image returned yet.";
+    frame.appendChild(missing);
   }
-  if (Array.isArray(value)) {
-    for (let i = 0; i < value.length; i++) {
-      const found = findImageUrl(value[i], depth + 1);
-      if (found) return found;
-    }
-    return "";
+
+  body.appendChild(frame);
+}
+
+function renderProductMatch(product){
+  const body = document.getElementById("r-body");
+  body.innerHTML = "";
+
+  const source = document.createElement("div");
+  source.className = "barcode-meta";
+  source.textContent = "Product record found via " + (product.source || "online lookup");
+  body.appendChild(source);
+
+  renderProductImage(body, product);
+
+  const title = document.createElement("div");
+  title.className = "product-match-title";
+  title.textContent = product.name || "Product name not supplied";
+  body.appendChild(title);
+
+  const grid = document.createElement("div");
+  grid.className = "product-info-grid";
+  [
+    ["Type", product.type],
+    ["Brand", product.brand],
+    ["Variant / flavour", product.variant],
+    ["Bottle / pack size", product.volume],
+    ["Alcohol strength", product.abv],
+    ["Packaging", product.packaging],
+    ["Country / origin", product.country],
+    ["Category", product.category]
+  ].forEach(([label, value]) => addProductField(grid, label, value));
+  body.appendChild(grid);
+
+  if (product.description) {
+    const description = document.createElement("div");
+    description.className = "product-description";
+    description.textContent = product.description;
+    body.appendChild(description);
   }
-  if (typeof value === "object") {
-    const priority = ["front","display","small","thumb","full","en","xx"];
-    for (let i = 0; i < priority.length; i++) {
-      if (Object.prototype.hasOwnProperty.call(value, priority[i])) {
-        const found = findImageUrl(value[priority[i]], depth + 1);
-        if (found) return found;
-      }
-    }
-    const keys = Object.keys(value);
-    for (let i = 0; i < keys.length; i++) {
-      const found = findImageUrl(value[keys[i]], depth + 1);
-      if (found) return found;
-    }
+
+  const sourceNote = document.createElement("div");
+  sourceNote.className = "product-source-note";
+  sourceNote.textContent = "Barcode: " + product.barcode + " · Source: " + (product.source || "unknown");
+  body.appendChild(sourceNote);
+
+  if (product.sourceRecordUrl && /^https?:\/\//i.test(product.sourceRecordUrl)) {
+    const link = document.createElement("a");
+    link.className = "lookup-link";
+    link.href = product.sourceRecordUrl;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = "Open source product record";
+    body.appendChild(link);
   }
-  return "";
 }
-function openFoodFactsImage(product){
-  const direct = [
-    product && product.image_front_url,
-    product && product.image_front_small_url,
-    product && product.image_url,
-    product && product.image_thumb_url
-  ];
-  for (let i = 0; i < direct.length; i++) {
-    const found = findImageUrl(direct[i], 0);
-    if (found) return found;
+
+function renderNoProductMatch(barcode, sources){
+  const body = document.getElementById("r-body");
+  body.innerHTML = "";
+
+  const message = document.createElement("div");
+  message.className = "barcode-note";
+  message.textContent =
+    "The barcode was read correctly, but no product record was found in the connected databases.";
+  body.appendChild(message);
+
+  const note = document.createElement("div");
+  note.className = "product-source-note";
+  note.textContent =
+    "This is a product-catalog gap, not a scanning error. The item can be added manually in the inventory phase.";
+  body.appendChild(note);
+
+  if (Array.isArray(sources) && sources.length) {
+    const sourceNote = document.createElement("div");
+    sourceNote.className = "product-source-note";
+    sourceNote.textContent = "Sources checked: " + sources.map((item) => item.source).filter(Boolean).join(" + ");
+    body.appendChild(sourceNote);
   }
-  return findImageUrl(product && product.selected_images, 0);
 }
-function extractOpenFoodFactsMatch(data, barcode){
-  const product = data && data.product ? data.product : null;
-  if (!product || Number(data.status) !== 1) return null;
-  return {
-    source:"Open Food Facts",
-    barcode:barcode,
-    name:product.product_name || product.product_name_en || "",
-    brand:product.brands || "",
-    quantity:product.quantity || "",
-    category:product.categories || "",
-    description:"",
-    imageUrl:openFoodFactsImage(product),
-    url:product.url || "https://world.openfoodfacts.org/product/" + encodeURIComponent(barcode),
-    rawCode:product.code || barcode
-  };
+
+function renderProductLookupError(){
+  const body = document.getElementById("r-body");
+  body.innerHTML = "";
+  const message = document.createElement("div");
+  message.className = "barcode-note";
+  message.textContent =
+    "The barcode was read, but the product lookup service could not be reached. The decoded value above is still valid.";
+  body.appendChild(message);
 }
-function extractUPCItemMatch(data, barcode){
-  const item = data && Array.isArray(data.items) && data.items.length ? data.items[0] : null;
-  if (!item) return null;
-  return {
-    source:"UPCitemdb",
-    barcode:barcode,
-    name:item.title || "",
-    brand:item.brand || "",
-    quantity:"",
-    category:item.category || "",
-    description:item.description || "",
-    imageUrl:findImageUrl(item.images, 0),
-    url:"https://www.upcitemdb.com/upc/" + encodeURIComponent(barcode),
-    rawCode:item.ean || item.upc || barcode
-  };
-}
-function mergeProductMatches(primary, secondary){
-  if (!primary) return secondary;
-  if (!secondary) return primary;
-  return {
-    source:primary.source + (primary.imageUrl || !secondary.imageUrl ? "" : " + " + secondary.source),
-    barcode:primary.barcode || secondary.barcode,
-    name:primary.name || secondary.name,
-    brand:primary.brand || secondary.brand,
-    quantity:primary.quantity || secondary.quantity,
-    category:primary.category || secondary.category,
-    description:primary.description || secondary.description,
-    imageUrl:primary.imageUrl || secondary.imageUrl,
-    url:primary.url || secondary.url,
-    rawCode:primary.rawCode || secondary.rawCode
-  };
-}
-async function requestProductJson(url, source, barcode){
+
+async function lookupProduct(barcode, metadata){
   const startedAt = performance.now();
+  const source = "Backbar product lookup";
+  debugLog("product_lookup_started", {
+    barcode:barcode,
+    engine:metadata && metadata.engine ? metadata.engine : "unknown",
+    sources:["Open Food Facts v3", "UPCitemdb trial"]
+  });
+
   let controller = null;
-  let timedOut = false;
   let timeoutId = null;
   try {
     if ("AbortController" in window) controller = new AbortController();
-  } catch(error) {
-    debugLog("product_lookup_abort_controller_unavailable", {
-      source:source,
-      error:errorDetails(error)
-    });
-  }
-  try {
     timeoutId = setTimeout(() => {
-      timedOut = true;
-      debugLog("product_lookup_timeout", {
-        source:source,
-        barcode:barcode,
-        timeoutMs:8000,
-        elapsedMs:Math.round(performance.now() - startedAt)
-      });
       if (controller) controller.abort();
-    }, 8000);
-    const response = await fetch(url, controller ? { signal:controller.signal } : {});
+    }, 18000);
+
+    const response = await fetch(
+      PRODUCT_LOOKUP_ENDPOINT + "?barcode=" + encodeURIComponent(barcode),
+      {
+        method:"GET",
+        cache:"no-store",
+        credentials:"same-origin",
+        signal:controller ? controller.signal : undefined
+      }
+    );
+    const raw = await response.text();
+    let data = null;
+    try { data = raw ? JSON.parse(raw) : null; } catch(error) {}
+
     clearTimeout(timeoutId);
     debugLog("product_lookup_http_response", {
       source:source,
       barcode:barcode,
       status:response.status,
       ok:response.ok,
-      contentType:truncate(response.headers.get("content-type") || "", 120),
       elapsedMs:Math.round(performance.now() - startedAt)
     });
-    if (response.status === 404) {
-      debugLog("product_lookup_not_found", { source:source, barcode:barcode });
-      return null;
+
+    if (!response.ok || !data || data.ok !== true) {
+      throw new Error((data && data.error) || "Product lookup returned an invalid response");
     }
-    if (!response.ok) {
-      throw new Error(source + " returned HTTP " + response.status);
+
+    if (data.found && data.product) {
+      lastResult.lookup = {
+        status:"found",
+        source:data.product.source || "unknown",
+        name:truncate(data.product.name || "", 240),
+        brand:truncate(data.product.brand || "", 160),
+        volume:truncate(data.product.volume || "", 80),
+        abv:truncate(data.product.abv || "", 80),
+        hasSourceImage:!!data.product.sourceImageUrl,
+        elapsedMs:Math.round(performance.now() - startedAt)
+      };
+      debugLog("product_lookup_completed", Object.assign({}, lastResult.lookup, {
+        sources:data.sources || []
+      }));
+      renderProductMatch(data.product);
+    } else {
+      lastResult.lookup = {
+        status:"not_found",
+        sources:data.sources || [],
+        elapsedMs:Math.round(performance.now() - startedAt)
+      };
+      debugLog("product_lookup_completed", lastResult.lookup);
+      renderNoProductMatch(barcode, data.sources);
     }
-    const data = await response.json();
-    debugLog("product_lookup_payload", {
-      source:source,
-      barcode:barcode,
-      hasProduct:!!(data && (data.product || (Array.isArray(data.items) && data.items.length)))
-    });
-    return data;
   } catch(error) {
     clearTimeout(timeoutId);
+    lastResult.lookup = {
+      status:"error",
+      error:errorDetails(error),
+      elapsedMs:Math.round(performance.now() - startedAt)
+    };
     debugLog("product_lookup_failed", {
       source:source,
       barcode:barcode,
-      outcome:timedOut || (error && error.name === "AbortError") ? "timeout" : "error",
       error:errorDetails(error),
       elapsedMs:Math.round(performance.now() - startedAt)
     });
-    return null;
-  }
-}
-function renderProductMatch(match){
-  const body = document.getElementById("r-body");
-  body.innerHTML = "";
-
-  const source = document.createElement("div");
-  source.className = "barcode-meta";
-  source.textContent = "Online match: " + match.source;
-  body.appendChild(source);
-
-  if (match.imageUrl) {
-    const frame = document.createElement("div");
-    frame.className = "product-image-frame";
-    const image = document.createElement("img");
-    image.src = match.imageUrl;
-    image.alt = match.name || "Product image";
-    image.loading = "eager";
-    image.referrerPolicy = "no-referrer";
-    image.onerror = () => {
-      debugLog("product_image_load_failed", {
-        source:match.source,
-        barcode:match.barcode,
-        imageUrl:truncate(match.imageUrl, 500)
-      });
-      frame.innerHTML = "";
-      const missing = document.createElement("div");
-      missing.className = "product-image-missing";
-      missing.textContent = "The product was matched, but its image could not be loaded.";
-      frame.appendChild(missing);
-    };
-    frame.appendChild(image);
-    body.appendChild(frame);
-  } else {
-    const missing = document.createElement("div");
-    missing.className = "product-image-frame";
-    const missingText = document.createElement("div");
-    missingText.className = "product-image-missing";
-    missingText.textContent = "Product matched, but no image was returned.";
-    missing.appendChild(missingText);
-    body.appendChild(missing);
-  }
-
-  const title = document.createElement("div");
-  title.className = "product-match-title";
-  title.textContent = match.name || "Product name not supplied";
-  body.appendChild(title);
-
-  if (match.brand) {
-    const brand = document.createElement("div");
-    brand.className = "product-match-brand";
-    brand.textContent = match.brand;
-    body.appendChild(brand);
-  }
-
-  const details = [match.quantity, match.category].filter(Boolean).join(" · ");
-  if (details) {
-    const detail = document.createElement("div");
-    detail.className = "product-match-detail";
-    detail.textContent = details;
-    body.appendChild(detail);
-  }
-
-  if (match.url && /^https?:\/\//i.test(match.url)) {
-    const link = document.createElement("a");
-    link.className = "lookup-link";
-    link.href = match.url;
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
-    link.textContent = "Open source record";
-    body.appendChild(link);
-  }
-}
-function renderNoProductMatch(barcode){
-  const body = document.getElementById("r-body");
-  body.innerHTML = "";
-  const message = document.createElement("div");
-  message.className = "barcode-note";
-  message.textContent = "No match was returned by the public databases. The barcode value above is still the exact value read by the scanner.";
-  body.appendChild(message);
-
-  const link = document.createElement("a");
-  link.className = "lookup-link";
-  link.href = "https://www.upcitemdb.com/upc/" + encodeURIComponent(barcode);
-  link.target = "_blank";
-  link.rel = "noopener noreferrer";
-  link.textContent = "Search this barcode online";
-  body.appendChild(link);
-}
-async function lookupProduct(barcode, metadata){
-  const startedAt = performance.now();
-  const fields = [
-    "code","product_name","product_name_en","brands","quantity","categories",
-    "image_front_small_url","image_front_url","image_url","image_thumb_url",
-    "selected_images","url"
-  ].join(",");
-  const offUrl = "https://world.openfoodfacts.org/api/v3/product/" +
-    encodeURIComponent(barcode) +
-    "?product_type=all&fields=" + encodeURIComponent(fields);
-  const upcUrl = "https://api.upcitemdb.com/prod/trial/lookup?upc=" +
-    encodeURIComponent(barcode);
-
-  debugLog("product_lookup_started", {
-    barcode:barcode,
-    sources:["Open Food Facts v3", "UPCitemdb trial"]
-  });
-
-  const offData = await requestProductJson(offUrl, "Open Food Facts v3", barcode);
-  const offMatch = extractOpenFoodFactsMatch(offData, barcode);
-  let match = offMatch;
-
-  if (!offMatch || !offMatch.imageUrl) {
-    const upcData = await requestProductJson(upcUrl, "UPCitemdb trial", barcode);
-    const upcMatch = extractUPCItemMatch(upcData, barcode);
-    match = mergeProductMatches(offMatch, upcMatch);
-  }
-
-  if (match) {
-    lastResult.lookup = {
-      status:"found",
-      source:match.source,
-      name:truncate(match.name, 240),
-      brand:truncate(match.brand, 160),
-      imageUrl:truncate(match.imageUrl, 500),
-      elapsedMs:Math.round(performance.now() - startedAt)
-    };
-    debugLog("product_lookup_completed", lastResult.lookup);
-    renderProductMatch(match);
-  } else {
-    lastResult.lookup = {
-      status:"not_found",
-      sources:["Open Food Facts v3", "UPCitemdb trial"],
-      elapsedMs:Math.round(performance.now() - startedAt)
-    };
-    debugLog("product_lookup_completed", lastResult.lookup);
-    renderNoProductMatch(barcode);
+    renderProductLookupError();
   }
 }
 function escapeHtml(s){ return (s||"").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
