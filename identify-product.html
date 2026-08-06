@@ -147,7 +147,7 @@ p.sub{color:var(--muted);font-size:13.5px;margin:0 0 26px;}
 (function(){
 "use strict";
 
-const APP_VERSION = "0.3.1";
+const APP_VERSION = "0.3.2";
 const appVersionEl = document.getElementById("app-version");
 if (appVersionEl) appVersionEl.textContent = "Version " + APP_VERSION;
 document.title = "Barcode Scanner Test · v" + APP_VERSION;
@@ -1216,11 +1216,20 @@ function renderNoProductMatch(barcode, sources){
   const aiSource = Array.isArray(sources)
     ? sources.find((item) => item && item.source === "AI web evidence")
     : null;
-  if (aiSource && aiSource.configured === false) {
+  if (aiSource) {
     const aiNote = document.createElement("div");
     aiNote.className = "product-source-note";
-    aiNote.textContent = "AI evidence fallback is ready in the code but is not enabled on this deployment yet.";
-    body.appendChild(aiNote);
+    if (
+      aiSource.status === 401 ||
+      /authentication token|api key/i.test(String(aiSource.error || ""))
+    ) {
+      aiNote.textContent = "AI lookup is unavailable because the server API key is invalid or expired. The barcode itself was read correctly.";
+    } else if (aiSource.configured === false) {
+      aiNote.textContent = "AI evidence fallback is ready in the code but is not enabled on this deployment yet.";
+    } else if (aiSource.status >= 400) {
+      aiNote.textContent = "AI evidence lookup returned an error (HTTP " + aiSource.status + "). The barcode itself was read correctly.";
+    }
+    if (aiNote.textContent) body.appendChild(aiNote);
   }
 
   const webSearchLink = document.createElement("a");
