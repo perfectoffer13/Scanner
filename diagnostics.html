@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>Private Diagnostics</title>
+<style>
+  :root{color-scheme:dark}
+  body{margin:0;padding:24px;background:#141210;color:#ede7dc;font:16px/1.45 system-ui,sans-serif}
+  main{max-width:900px;margin:0 auto}
+  h1{font-size:22px}
+  p{color:#b7ac9b}
+  .row{display:flex;gap:10px;flex-wrap:wrap}
+  input,button{font:inherit;border-radius:8px;padding:10px 12px}
+  input{min-width:280px;background:#0a0908;color:#ede7dc;border:1px solid #4b4031}
+  button{background:#c9962f;color:#1c1300;border:0;font-weight:700;cursor:pointer}
+  pre{margin-top:18px;padding:16px;overflow:auto;white-space:pre-wrap;word-break:break-word;background:#0a0908;border:1px solid #3a332a;border-radius:8px;font:12px/1.5 ui-monospace,monospace}
+</style>
+</head>
+<body>
+<main>
+  <h1>Private scanner diagnostics</h1>
+  <p>This page reads the latest snapshot only when the private read key is supplied.</p>
+  <div class="row">
+    <input id="key" type="password" autocomplete="off" placeholder="Private read key">
+    <button id="load">Load latest snapshot</button>
+  </div>
+  <pre id="output">No snapshot loaded.</pre>
+</main>
+<script>
+"use strict";
+const keyInput = document.getElementById("key");
+const output = document.getElementById("output");
+async function loadSnapshot(){
+  const key = keyInput.value.trim();
+  if (!key) {
+    output.textContent = "Enter the private read key.";
+    return;
+  }
+  output.textContent = "Loading…";
+  try {
+    const response = await fetch(
+      "/.netlify/functions/diagnostics?key=" + encodeURIComponent(key),
+      { cache:"no-store" }
+    );
+    const body = await response.text();
+    let parsed;
+    try { parsed = JSON.parse(body); } catch(error) { parsed = body; }
+    output.textContent = typeof parsed === "string"
+      ? parsed
+      : JSON.stringify(parsed, null, 2);
+  } catch(error) {
+    output.textContent = "Could not load diagnostics: " + (error.message || error);
+  }
+}
+document.getElementById("load").addEventListener("click", loadSnapshot);
+const queryKey = new URLSearchParams(location.search).get("key");
+if (queryKey) {
+  keyInput.value = queryKey;
+  loadSnapshot();
+}
+</script>
+</body>
+</html>
