@@ -4,6 +4,7 @@ const REQUEST_TIMEOUT_MS = 8000;
 const MAX_TEXT = 6000;
 const AI_LOOKUP_TIMEOUT_MS = 25000;
 const AI_LOOKUP_MODEL = "claude-haiku-4-5-20251001";
+const AI_WEB_SEARCH_MAX_USES = 2;
 
 function text(value, maxLength = MAX_TEXT) {
   if (value === null || value === undefined) return "";
@@ -422,25 +423,30 @@ async function lookupWithAI(barcode) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), AI_LOOKUP_TIMEOUT_MS);
   const startedAt = Date.now();
+  const model = process.env.ANTHROPIC_BARCODE_MODEL || AI_LOOKUP_MODEL;
+  const searchForms = barcodeSearchForms(barcode);
   const input = [
     "Identify the retail item associated with this exact barcode.",
     "This can be any category: beverage, food, cleaning product, cosmetics, electronics, or another retail item.",
-    "Use web search for the exact barcode in quotes. Only accept a match when a source explicitly connects this exact barcode to the item.",
+    "Search the exact barcode forms in quotes, including retailer, distributor, manufacturer, and product catalog pages.",
+    "If the barcode is a 12-digit UPC-A, also search its 13-digit GTIN form with a leading zero. If it is a 13-digit GTIN beginning with zero, also search its 12-digit UPC-A form. These are equivalent representations of the same barcode.",
+    "Only accept a match when a source explicitly connects one of those equivalent barcode forms to the item.",
     "Do not identify an item from a similar barcode, a product name alone, or general category knowledge.",
+    "For beverages, prioritize the brand, full product name, variant or flavour, container size, ABV, beverage type, and country of origin.",
     "Do not guess missing fields. Use an empty string for unsupported fields.",
     "Return only one JSON object, with no Markdown, using this shape:",
     '{"found":true,"name":"","brand":"","type":"","variant":"","volume":"","abv":"","packaging":"","country":"","category":"","description":"","image_url":"","source_urls":[],"confidence":"high|medium|low|none","evidence":""}',
     "If there is no reliable exact-code match, return found:false, empty product fields, confidence:none, and explain why in evidence.",
-    "Barcode: " + barcode,
+    "Barcode forms to search: " + searchForms.map((value) => '"' + value + '"').join(" OR "),
   ].join("\n");
 
   const requestBody = (messages) => ({
-    model: process.env.ANTHROPIC_BARCODE_MODEL || AI_LOOKUP_MODEL,
+    model,
     max_tokens: 600,
     tools: [{
       type: "web_search_20250305",
       name: "web_search",
-      max_uses: 2,
+      max_uses: AI_WEB_SEARCH_MAX_USES,
     }],
     messages,
   });
@@ -503,6 +509,8 @@ async function lookupWithAI(barcode) {
       configured: true,
       status: response.status,
       ok: response.ok,
+      model,
+      webSearchMaxUses: AI_WEB_SEARCH_MAX_USES,
       product,
       confidence: product && product.matchConfidence ? product.matchConfidence : null,
       error: response.ok
@@ -540,6 +548,13 @@ function jsonResponse(status, body) {
 function normalizedBarcode(value) {
   const candidate = text(value, 80);
   return /^[A-Za-z0-9._-]{3,80}$/.test(candidate) ? candidate : "";
+}
+
+function barcodeSearchForms(barcode) {
+  const forms = [barcode];
+  if (/^\d{12}$/.test(barcode)) forms.push("0" + barcode);
+  if (/^0\d{12}$/.test(barcode)) forms.push(barcode.slice(1));
+  return Array.from(new Set(forms));
 }
 
 async function fetchJson(url, source) {
@@ -704,6 +719,8 @@ export default async function productLookup(request) {
       configured: aiResult.configured,
       found: !!aiResult.product,
       confidence: aiResult.confidence || null,
+      model: aiResult.model || null,
+      webSearchMaxUses: aiResult.webSearchMaxUses || AI_WEB_SEARCH_MAX_USES,
       elapsedMs: aiResult.elapsedMs,
       error: aiResult.error || null,
     });
