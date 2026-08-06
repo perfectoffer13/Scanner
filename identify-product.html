@@ -86,7 +86,7 @@ p.sub{color:var(--muted);font-size:13.5px;margin:0 0 26px;}
       <button class="diag-btn" id="btn-view-log">View debug log</button>
       <button class="diag-btn" id="btn-copy-log">Copy debug log</button>
     </div>
-    <div class="diag-note" id="diagnostic-note">Diagnostics are stored on this device and can be copied for diagnosis.</div>
+    <div class="diag-note" id="diagnostic-note">Diagnostics sync automatically when online; they remain on this device if offline.</div>
   </div>
 </div>
 
@@ -210,8 +210,8 @@ function updateDiagnosticNote(countOverride){
   if (!diagnosticNote) return;
   const count = typeof countOverride === "number" ? countOverride : readDiagnostics().length;
   diagnosticNote.textContent = count
-    ? count + " diagnostic events stored on this device."
-    : "Diagnostics are ready. Events will appear here after a scan.";
+    ? count + " diagnostic events stored locally; automatic sync is enabled."
+    : "Diagnostics sync automatically when online; they remain on this device if offline.";
 }
 function debugLog(event, details){
   const entry = {
@@ -224,8 +224,125 @@ function debugLog(event, details){
   events.push(entry);
   const saved = writeDiagnostics(events);
   updateDiagnosticNote(events.slice(-MAX_DIAGNOSTIC_EVENTS).length);
+  if (event !== "diagnostic_upload_failed") scheduleDiagnosticsUpload(event);
   return saved;
 }
+
+const DIAGNOSTIC_ENDPOINT = "/.netlify/functions/diagnostics";
+const DIAGNOSTIC_UPLOAD_DELAY_MS = 1800;
+const DIAGNOSTIC_UPLOAD_MIN_INTERVAL_MS = 10000;
+let diagnosticUploadTimer = null;
+let diagnosticUploadInFlight = false;
+let diagnosticUploadQueued = false;
+let lastDiagnosticUploadAt = 0;
+
+function diagnosticsCanUpload(){
+  return (window.location.protocol === "https:" || window.location.protocol === "http:") &&
+    window.location.hostname === "backbar-product-scanner.netlify.app";
+}
+function setDiagnosticUploadNote(message){
+  if (!diagnosticNote) return;
+  const count = readDiagnostics().length;
+  diagnosticNote.textContent = count
+    ? count + " diagnostic events stored locally. " + message
+    : message;
+}
+function buildDiagnosticUploadPayload(reason){
+  let payload;
+  try {
+    payload = JSON.parse(buildDiagnosticExport());
+  } catch(error) {
+    return null;
+  }
+  payload.events = Array.isArray(payload.events)
+    ? payload.events.slice(-120)
+    : [];
+  payload.uploadReason = truncate(reason || "scheduled", 120);
+  payload.uploadedAt = new Date().toISOString();
+  payload.clientPath = truncate(
+    (window.location.origin || "") + (window.location.pathname || ""),
+    300
+  );
+  return payload;
+}
+function scheduleDiagnosticsUpload(reason){
+  if (!diagnosticsCanUpload() || !window.fetch) return;
+  diagnosticUploadQueued = true;
+  if (diagnosticUploadTimer) clearTimeout(diagnosticUploadTimer);
+  const elapsed = Date.now() - lastDiagnosticUploadAt;
+  const waitMs = Math.max(
+    DIAGNOSTIC_UPLOAD_DELAY_MS,
+    DIAGNOSTIC_UPLOAD_MIN_INTERVAL_MS - Math.max(0, elapsed)
+  );
+  diagnosticUploadTimer = setTimeout(() => {
+    diagnosticUploadTimer = null;
+    if (!diagnosticUploadQueued) return;
+    diagnosticUploadQueued = false;
+    sendDiagnostics(reason || "scheduled");
+  }, waitMs);
+}
+async function sendDiagnostics(reason, options){
+  const opts = options || {};
+  if (!diagnosticsCanUpload()) return;
+
+  const payload = buildDiagnosticUploadPayload(reason);
+  if (!payload) return;
+  const serialized = JSON.stringify(payload);
+
+  if (opts.beacon) {
+    if (!navigator.sendBeacon || serialized.length > 60000) return;
+    try {
+      const accepted = navigator.sendBeacon(
+        DIAGNOSTIC_ENDPOINT,
+        new Blob([serialized], { type:"application/json" })
+      );
+      if (accepted) {
+        lastDiagnosticUploadAt = Date.now();
+        setDiagnosticUploadNote("Latest diagnostics queued for private storage.");
+      }
+    } catch(error) {
+      setDiagnosticUploadNote("Diagnostics remain on this device; the upload will retry.");
+    }
+    return;
+  }
+
+  if (diagnosticUploadInFlight) {
+    diagnosticUploadQueued = true;
+    return;
+  }
+
+  diagnosticUploadInFlight = true;
+  lastDiagnosticUploadAt = Date.now();
+  try {
+    const response = await fetch(DIAGNOSTIC_ENDPOINT, {
+      method:"POST",
+      headers:{ "Content-Type":"application/json" },
+      body:serialized,
+      credentials:"omit"
+    });
+    if (!response.ok) {
+      throw new Error("Diagnostics endpoint returned HTTP " + response.status);
+    }
+    setDiagnosticUploadNote("Latest diagnostics synced to private storage.");
+  } catch(error) {
+    setDiagnosticUploadNote("Diagnostics remain on this device; the upload will retry.");
+  } finally {
+    diagnosticUploadInFlight = false;
+    if (diagnosticUploadQueued) {
+      diagnosticUploadQueued = false;
+      scheduleDiagnosticsUpload("queued_events");
+    }
+  }
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") {
+    sendDiagnostics("visibility_hidden", { beacon:true });
+  }
+});
+window.addEventListener("pagehide", () => {
+  sendDiagnostics("pagehide", { beacon:true });
+});
+
 function logThrottled(event, details, minimumMs){
   const now = Date.now();
   const interval = minimumMs || 3000;
