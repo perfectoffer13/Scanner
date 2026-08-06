@@ -1,10 +1,11 @@
 const ALLOWED_ORIGIN = "https://backbar-product-scanner.netlify.app";
-const USER_AGENT = "BackbarProductScanner/0.2 (+https://backbar-product-scanner.netlify.app)";
+const USER_AGENT = "BackbarProductScanner/0.5 (+https://backbar-product-scanner.netlify.app)";
 const REQUEST_TIMEOUT_MS = 8000;
 const MAX_TEXT = 6000;
 const AI_LOOKUP_TIMEOUT_MS = 25000;
 const AI_LOOKUP_MODEL = "claude-haiku-4-5-20251001";
 const AI_WEB_SEARCH_MAX_USES = 2;
+const AI_LOOKUP_MAX_PAUSE_CONTINUATIONS = 2;
 const LIQUID_STOCK_KEYWORDS = [
   "beverage", "drink", "soft drink", "cooldrink", "cola", "soda",
   "juice", "water", "tonic", "mixer", "energy drink", "beer", "lager",
@@ -482,29 +483,48 @@ async function lookupWithAI(barcode) {
   const model = process.env.ANTHROPIC_BARCODE_MODEL || AI_LOOKUP_MODEL;
   const searchForms = barcodeSearchForms(barcode);
   const input = [
-    "Identify the retail item associated with this exact barcode for liquid-stock inventory.",
-    "This app is for bars, pubs, restaurants, bottle shops, and hospitality venues.",
+    "You are the exact-barcode evidence resolver for a hospitality liquid-stock inventory app.",
+    "Always use web search for this request; do not answer from memory.",
+    "Identify the retail item associated with the exact barcode for bars, pubs, restaurants, bottle shops, and hospitality venues.",
     "Prioritize spirits, wine, beer, cider, cooldrinks or soft drinks, water, juices, mixers, energy drinks, syrups, and shots.",
-    "Search the exact barcode forms in quotes, including local retailers, distributors, manufacturers, and product catalog pages.",
-    "If the barcode is a 12-digit UPC-A, also search its 13-digit GTIN form with a leading zero. If it is a 13-digit GTIN beginning with zero, also search its 12-digit UPC-A form. These are equivalent representations of the same barcode.",
-    "Only accept a match when a source explicitly connects one of those equivalent barcode forms to the item.",
+    "Search the exact unbroken barcode first, then its valid equivalent UPC-A or GTIN-13 representation if applicable.",
+    "Use the two searches efficiently: search the exact digits with beverage/product terms and search the exact digits with local retailer, distributor, manufacturer, or catalog terms.",
+    "A retailer page, distributor listing, official promotion PDF, inventory catalog, or manufacturer page is acceptable evidence when the exact barcode and the item appear together.",
     "Do not identify an item from a similar barcode, a product name alone, or general category knowledge.",
-    "For beverages, prioritize the brand, full product name, variant or flavour, container size, ABV, beverage type, packaging, and country of origin.",
-    "If the exact barcode belongs to a solid food or non-liquid item, return found:false and scope:out_of_scope instead of returning it as a stock item.",
+    "For beverages, return the brand, full product name, variant or flavour, container size, ABV when applicable, beverage type, packaging, country of origin, and a concise inventory description.",
+    "If the exact barcode belongs to a solid food or non-liquid item, return found:false and scope:out_of_scope.",
     "Do not guess missing fields. Use an empty string for unsupported fields.",
     "Return only one JSON object, with no Markdown, using this shape:",
     '{"found":true,"scope":"in_scope|out_of_scope|unknown","name":"","brand":"","type":"","variant":"","volume":"","abv":"","packaging":"","country":"","category":"","description":"","image_url":"","source_urls":[],"confidence":"high|medium|low|none","evidence":""}',
-    "If there is no reliable exact-code match, return found:false, scope:unknown, empty product fields, confidence:none, and explain why in evidence.",
+    "Set found:true only when a cited source explicitly connects this exact barcode or an equivalent UPC/GTIN form to the product.",
+    "If no reliable exact-code match is found, return found:false, scope:unknown, empty product fields, confidence:none, and explain why in evidence.",
     "Barcode forms to search: " + searchForms.map((value) => '"' + value + '"').join(" OR "),
   ].join("\n");
 
+  function aiSearchLocation(){
+    const country = text(
+      process.env.ANTHROPIC_BARCODE_COUNTRY || "ZA",
+      2
+    ).toUpperCase();
+    const timezone = text(
+      process.env.ANTHROPIC_BARCODE_TIMEZONE || "Africa/Johannesburg",
+      80
+    );
+    return {
+      type:"approximate",
+      country:/^[A-Z]{2}$/.test(country) ? country : "ZA",
+      timezone:timezone || "Africa/Johannesburg"
+    };
+  }
+
   const requestBody = (messages) => ({
     model,
-    max_tokens: 600,
+    max_tokens: 800,
     tools: [{
       type: "web_search_20250305",
       name: "web_search",
       max_uses: AI_WEB_SEARCH_MAX_USES,
+      user_location: aiSearchLocation(),
     }],
     messages,
   });
@@ -525,9 +545,10 @@ async function lookupWithAI(barcode) {
 
   try {
     const responseData = [];
-    let response = await requestAnthropic([
+    const messages = [
       { role: "user", content: input },
-    ]);
+    ];
+    let response = await requestAnthropic(messages);
     let raw = await response.text();
     let data = null;
     try {
@@ -537,16 +558,19 @@ async function lookupWithAI(barcode) {
     }
     responseData.push(data);
 
-    if (
+    let pauseContinuations = 0;
+    while (
       response.ok &&
       data &&
       data.stop_reason === "pause_turn" &&
-      Array.isArray(data.content)
+      Array.isArray(data.content) &&
+      pauseContinuations < AI_LOOKUP_MAX_PAUSE_CONTINUATIONS
     ) {
-      response = await requestAnthropic([
-        { role: "user", content: input },
-        { role: "assistant", content: data.content },
-      ]);
+      // Anthropic requires the paused assistant content to be sent back
+      // unchanged, with the same server-side web-search tool definition.
+      messages.push({ role: "assistant", content: data.content });
+      pauseContinuations++;
+      response = await requestAnthropic(messages);
       raw = await response.text();
       try {
         data = raw ? JSON.parse(raw) : null;
@@ -569,6 +593,8 @@ async function lookupWithAI(barcode) {
       ok: response.ok,
       model,
       webSearchMaxUses: AI_WEB_SEARCH_MAX_USES,
+      pauseContinuations,
+      stopReason: data && data.stop_reason ? data.stop_reason : null,
       product,
       confidence: product && product.matchConfidence ? product.matchConfidence : null,
       error: response.ok
