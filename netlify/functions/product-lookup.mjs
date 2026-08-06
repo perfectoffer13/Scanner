@@ -2,6 +2,8 @@ const ALLOWED_ORIGIN = "https://backbar-product-scanner.netlify.app";
 const USER_AGENT = "BackbarProductScanner/0.2 (+https://backbar-product-scanner.netlify.app)";
 const REQUEST_TIMEOUT_MS = 8000;
 const MAX_TEXT = 6000;
+const AI_LOOKUP_TIMEOUT_MS = 20000;
+const AI_LOOKUP_MODEL = "gpt-5";
 
 function text(value, maxLength = MAX_TEXT) {
   if (value === null || value === undefined) return "";
@@ -247,9 +249,240 @@ function mergeProducts(primary, secondary, barcode) {
     source: primary.source + " + " + secondary.source,
     sourceRecordUrl: firstText(primary.sourceRecordUrl, secondary.sourceRecordUrl),
     sourceImageUrl: firstText(primary.sourceImageUrl, secondary.sourceImageUrl),
+    sourceUrls: Array.from(new Set([...(primary.sourceUrls || []), ...(secondary.sourceUrls || [])])),
+    matchConfidence: firstText(primary.matchConfidence, secondary.matchConfidence),
+    evidence: firstText(primary.evidence, secondary.evidence),
   };
   merged.description = merged.description || productDescription(merged, merged);
   return merged;
+}
+
+
+function hasUsableProduct(product) {
+  return Boolean(
+    product &&
+    product.name &&
+    (product.brand || product.category || product.type),
+  );
+}
+
+function responseOutputText(data) {
+  if (data && typeof data.output_text === "string" && data.output_text.trim()) {
+    return data.output_text;
+  }
+
+  const chunks = [];
+  const output = Array.isArray(data && data.output) ? data.output : [];
+  for (const item of output) {
+    const content = Array.isArray(item && item.content) ? item.content : [];
+    for (const piece of content) {
+      if (typeof (piece && piece.text) === "string") chunks.push(piece.text);
+      else if (typeof (piece && piece.text && piece.text.value) === "string") chunks.push(piece.text.value);
+    }
+  }
+  return chunks.join("\n");
+}
+
+function responseCitationUrls(data) {
+  const urls = [];
+  const seen = new Set();
+
+  function visit(value) {
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+
+    if (typeof value.url === "string" && /^https?:\/\//i.test(value.url)) {
+      const url = value.url.trim();
+      if (!seen.has(url)) {
+        seen.add(url);
+        urls.push(url);
+      }
+    }
+
+    Object.values(value).forEach((child) => {
+      if (child && typeof child === "object") visit(child);
+    });
+  }
+
+  visit(data && data.output);
+  return urls.slice(0, 8);
+}
+
+function parseAIJson(value) {
+  const raw = text(value, 12000)
+    .replace(/^[\u0060]{3}(?:json)?\s*/i, "")
+    .replace(/\s*[\u0060]{3}$/i, "")
+    .trim();
+
+  if (!raw) return null;
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const start = raw.indexOf("{");
+    const end = raw.lastIndexOf("}");
+    if (start === -1 || end <= start) return null;
+    try {
+      return JSON.parse(raw.slice(start, end + 1));
+    } catch {
+      return null;
+    }
+  }
+}
+
+function normalizeAIProduct(data, barcode, citationUrls) {
+  if (!data || data.found !== true) return null;
+
+  const name = firstText(data.name, data.product_name, data.title);
+  const confidence = ["high", "medium", "low"].includes(String(data.confidence).toLowerCase())
+    ? String(data.confidence).toLowerCase()
+    : "low";
+  if (!name) return null;
+
+  const sourceUrls = [];
+  const seen = new Set();
+  for (const value of [
+    ...(Array.isArray(data.source_urls) ? data.source_urls : []),
+    ...(Array.isArray(data.sourceUrls) ? data.sourceUrls : []),
+    ...citationUrls,
+  ]) {
+    const url = imageUrl(value);
+    if (url && !seen.has(url)) {
+      seen.add(url);
+      sourceUrls.push(url);
+    }
+  }
+
+  const fields = {
+    name,
+    brand: firstText(data.brand),
+    variant: firstText(data.variant, data.flavour, data.flavor),
+    volume: firstText(data.volume, data.size, extractVolume(name, data.description)),
+    abv: firstText(data.abv, data.alcohol_strength, data.alcohol),
+  };
+
+  return {
+    barcode,
+    name: fields.name,
+    brand: fields.brand,
+    type: firstText(data.type, data.product_type, data.category) || "Unknown item",
+    variant: fields.variant,
+    volume: fields.volume,
+    abv: fields.abv,
+    packaging: firstText(data.packaging),
+    country: firstText(data.country, data.origin),
+    category: firstText(data.category, data.product_type),
+    description: firstText(data.description, productDescription(data, fields)),
+    source: "AI web evidence",
+    sourceRecordUrl: firstText(sourceUrls[0]),
+    sourceImageUrl: imageUrl(data.image_url || data.imageUrl),
+    sourceUrls,
+    matchConfidence: confidence,
+    evidence: firstText(data.evidence),
+  };
+}
+
+async function lookupWithAI(barcode) {
+  const enabled = String(process.env.AI_BARCODE_LOOKUP_ENABLED || "").toLowerCase() === "true";
+  if (!enabled) {
+    return {
+      configured: false,
+      status: 0,
+      ok: false,
+      product: null,
+      confidence: null,
+      error: "not_configured",
+      elapsedMs: 0,
+    };
+  }
+
+  const apiKey = text(process.env.OPENAI_API_KEY, 300);
+  if (!apiKey) {
+    return {
+      configured: false,
+      status: 0,
+      ok: false,
+      product: null,
+      confidence: null,
+      error: "missing_api_key",
+      elapsedMs: 0,
+    };
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), AI_LOOKUP_TIMEOUT_MS);
+  const startedAt = Date.now();
+  const input = [
+    "Identify the retail item associated with this exact barcode.",
+    "This can be any category: beverage, food, cleaning product, cosmetics, electronics, or another retail item.",
+    "Use web search for the exact barcode in quotes. Only accept a match when a source explicitly connects this exact barcode to the item.",
+    "Do not identify an item from a similar barcode, a product name alone, or general category knowledge.",
+    "Do not guess missing fields. Use an empty string for unsupported fields.",
+    "Return only one JSON object, with no Markdown, using this shape:",
+    '{"found":true,"name":"","brand":"","type":"","variant":"","volume":"","abv":"","packaging":"","country":"","category":"","description":"","image_url":"","source_urls":[],"confidence":"high|medium|low|none","evidence":""}',
+    "If there is no reliable exact-code match, return found:false, empty product fields, confidence:none, and explain why in evidence.",
+    "Barcode: " + barcode,
+  ].join("\n");
+
+  try {
+    const response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        accept: "application/json",
+        "content-type": "application/json",
+        authorization: "Bearer " + apiKey,
+      },
+      body: JSON.stringify({
+        model: process.env.OPENAI_BARCODE_MODEL || AI_LOOKUP_MODEL,
+        tools: [{ type: "web_search" }],
+        input,
+        max_output_tokens: 900,
+      }),
+    });
+
+    const raw = await response.text();
+    let data = null;
+    try {
+      data = raw ? JSON.parse(raw) : null;
+    } catch {
+      data = null;
+    }
+
+    const responseText = responseOutputText(data);
+    const parsed = parseAIJson(responseText);
+    const citationUrls = responseCitationUrls(data);
+    const product = response.ok
+      ? normalizeAIProduct(parsed, barcode, citationUrls)
+      : null;
+
+    return {
+      configured: true,
+      status: response.status,
+      ok: response.ok,
+      product,
+      confidence: product && product.matchConfidence ? product.matchConfidence : null,
+      error: response.ok
+        ? (parsed ? null : "invalid_ai_json")
+        : text(data && data.error && data.error.message || raw, 320),
+      elapsedMs: Date.now() - startedAt,
+    };
+  } catch (error) {
+    return {
+      configured: true,
+      status: 0,
+      ok: false,
+      product: null,
+      confidence: null,
+      error: text(error && (error.message || error), 320),
+      elapsedMs: Date.now() - startedAt,
+    };
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 function jsonResponse(status, body) {
@@ -422,12 +655,31 @@ export default async function productLookup(request) {
     );
   }
 
-  if (!product) {
+  if (!hasUsableProduct(product) || !product.volume || !product.brand) {
+    const aiResult = await lookupWithAI(barcode);
+    attempts.push({
+      source: "AI web evidence",
+      status: aiResult.status,
+      ok: aiResult.ok,
+      configured: aiResult.configured,
+      found: !!aiResult.product,
+      confidence: aiResult.confidence || null,
+      elapsedMs: aiResult.elapsedMs,
+      error: aiResult.error || null,
+    });
+    product = mergeProducts(product, aiResult.product, barcode);
+  }
+
+  if (!hasUsableProduct(product)) {
     return jsonResponse(200, {
       ok: true,
       found: false,
       barcode,
       sources: attempts,
+      aiLookup: {
+        enabled: String(process.env.AI_BARCODE_LOOKUP_ENABLED || "").toLowerCase() === "true",
+        configured: !!process.env.OPENAI_API_KEY,
+      },
     });
   }
 
