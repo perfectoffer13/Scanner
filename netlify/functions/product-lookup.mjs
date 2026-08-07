@@ -1,5 +1,5 @@
 const ALLOWED_ORIGIN = "https://backbar-product-scanner.netlify.app";
-const USER_AGENT = "BackbarProductScanner/0.6 (+https://backbar-product-scanner.netlify.app)";
+const USER_AGENT = "BackbarProductScanner/0.7 (+https://backbar-product-scanner.netlify.app)";
 const REQUEST_TIMEOUT_MS = 8000;
 const MAX_TEXT = 6000;
 const AI_LOOKUP_TIMEOUT_MS = 25000;
@@ -907,79 +907,55 @@ export default async function productLookup(request) {
     const upcUrl =
       "https://api.upcitemdb.com/prod/trial/lookup?upc=" +
       encodeURIComponent(barcode);
-    const upcResult = await fetchJson(upcUrl, "UPCitemdb trial");
-    attempts.push({
-      source: upcResult.source,
-      status: upcResult.status,
-      ok: upcResult.ok,
-      elapsedMs: upcResult.elapsedMs,
-      error: upcResult.error || null,
-    });
-    product = mergeProducts(
-      product,
-      normalizeUPCItem(upcResult.data, barcode),
-      barcode,
-    );
-  }
-
-  if (!product || !product.name || !product.brand || !product.volume) {
     const upcDevUrl =
       "https://upc.dev/v1/product/" + encodeURIComponent(barcode);
-    const upcDevResult = await fetchJson(upcDevUrl, "upc.dev");
-    attempts.push({
-      source: upcDevResult.source,
-      status: upcDevResult.status,
-      ok: upcDevResult.ok,
-      found: !!normalizeBarcodeCatalogProduct(
-        upcDevResult.data,
-        barcode,
-        "upc.dev",
-        "https://upc.dev/product/" + encodeURIComponent(barcode),
-      ),
-      elapsedMs: upcDevResult.elapsedMs,
-      error: upcDevResult.error || null,
-    });
-    product = mergeProducts(
-      product,
-      normalizeBarcodeCatalogProduct(
-        upcDevResult.data,
-        barcode,
-        "upc.dev",
-        "https://upc.dev/product/" + encodeURIComponent(barcode),
-      ),
-      barcode,
-    );
-  }
+    const gtinHubEnabled =
+      String(process.env.GTINHUB_LOOKUP_ENABLED || "true").toLowerCase() !== "false";
+    const catalogRequests = [
+      fetchJson(upcUrl, "UPCitemdb trial"),
+      fetchJson(upcDevUrl, "upc.dev"),
+    ];
 
-  const gtinHubEnabled =
-    String(process.env.GTINHUB_LOOKUP_ENABLED || "true").toLowerCase() !== "false";
-  if (gtinHubEnabled && (!product || !product.name || !product.brand || !product.volume)) {
-    const gtinHubUrl =
-      "https://gtinhub.com/api/v1/product/" + encodeURIComponent(barcode);
-    const gtinHubResult = await fetchJson(gtinHubUrl, "GTINHub");
-    attempts.push({
-      source: gtinHubResult.source,
-      status: gtinHubResult.status,
-      ok: gtinHubResult.ok,
-      found: !!normalizeBarcodeCatalogProduct(
-        gtinHubResult.data,
-        barcode,
-        "GTINHub",
-        "https://gtinhub.com/api/v1/product/" + encodeURIComponent(barcode),
-      ),
-      elapsedMs: gtinHubResult.elapsedMs,
-      error: gtinHubResult.error || null,
-    });
-    product = mergeProducts(
-      product,
-      normalizeBarcodeCatalogProduct(
-        gtinHubResult.data,
-        barcode,
-        "GTINHub",
-        "https://gtinhub.com/api/v1/product/" + encodeURIComponent(barcode),
-      ),
-      barcode,
-    );
+    if (gtinHubEnabled) {
+      const gtinHubUrl =
+        "https://gtinhub.com/api/v1/product/" + encodeURIComponent(barcode);
+      catalogRequests.push(fetchJson(gtinHubUrl, "GTINHub"));
+    }
+
+    const catalogResults = await Promise.all(catalogRequests);
+    for (const catalogResult of catalogResults) {
+      let catalogProduct = null;
+      if (catalogResult.source === "UPCitemdb trial") {
+        catalogProduct = normalizeUPCItem(catalogResult.data, barcode);
+      } else if (catalogResult.source === "upc.dev") {
+        catalogProduct = normalizeBarcodeCatalogProduct(
+          catalogResult.data,
+          barcode,
+          "upc.dev",
+          "https://upc.dev/product/" + encodeURIComponent(barcode),
+        );
+      } else if (catalogResult.source === "GTINHub") {
+        catalogProduct = normalizeBarcodeCatalogProduct(
+          catalogResult.data,
+          barcode,
+          "GTINHub",
+          "https://gtinhub.com/api/v1/product/" + encodeURIComponent(barcode),
+        );
+      }
+
+      const attempt = {
+        source: catalogResult.source,
+        status: catalogResult.status,
+        ok: catalogResult.ok,
+        elapsedMs: catalogResult.elapsedMs,
+        error: catalogResult.error || null,
+      };
+      if (catalogResult.source !== "UPCitemdb trial") {
+        attempt.found = !!catalogProduct;
+      }
+      attempts.push(attempt);
+      product = mergeProducts(product, catalogProduct, barcode);
+    }
   }
 
   if (!hasUsableProduct(product) || !product.volume || !product.brand) {
