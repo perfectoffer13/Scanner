@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Barcode Scanner Test</title>
+<title>Backbar Scanner</title>
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 <style>
 :root{
@@ -81,16 +81,76 @@ p.sub{color:var(--muted);font-size:13.5px;margin:0 0 26px;}
 .diagnostics-inner .label{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--brass);margin-bottom:6px;}
 .diagnostics-copy{color:var(--muted);font-size:12px;line-height:1.45;margin:0 0 10px;}
 #diagnostics-output{background:#0a0908;border:1px solid var(--line);border-radius:8px;color:#d9d0c1;font:11px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;max-height:58vh;overflow:auto;white-space:pre-wrap;word-break:break-word;padding:12px;margin:0;}
+
+/* Mini-inventory workflow */
+.inventory-summary{width:100%;display:flex;justify-content:space-between;align-items:center;margin:0 0 12px;padding:11px 13px;background:var(--panel);border:1px solid var(--line);border-radius:10px;color:var(--muted);font-size:12px;text-align:left;}
+.inventory-summary strong{color:var(--brass-soft);font-size:15px;}
+.home-actions{display:grid;gap:10px;width:100%;}
+.home-actions .btn{margin:0;}
+.workflow-note{margin-top:14px;color:var(--muted);font-size:11.5px;line-height:1.45;}
+#photo-input,#manual-photo-input{display:none;}
+.inventory-card,.manual-card{position:fixed;inset:0;z-index:45;background:rgba(6,5,4,.96);display:none;align-items:flex-start;justify-content:center;padding:18px;overflow-y:auto;-webkit-overflow-scrolling:touch;}
+.inventory-card.show,.manual-card.show{display:flex;}
+.inventory-inner,.manual-inner{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 18px 30px;max-width:480px;width:100%;text-align:left;}
+.overlay-header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px;}
+.overlay-header h2{font-size:18px;margin:0;}
+.overlay-close{background:none;border:0;color:var(--text);font-size:25px;line-height:1;cursor:pointer;}
+.inventory-subtitle,.manual-subtitle{color:var(--muted);font-size:12px;line-height:1.45;margin:0 0 14px;}
+.inventory-list{display:grid;gap:10px;}
+.inventory-empty{padding:22px 14px;border:1px dashed var(--line);border-radius:10px;color:var(--muted);font-size:13px;text-align:center;}
+.inventory-item{display:grid;grid-template-columns:86px minmax(0,1fr);gap:12px;padding:10px;border:1px solid var(--line);border-radius:11px;background:#141210;}
+.inventory-thumb{width:86px;height:108px;display:flex;align-items:center;justify-content:center;background:#fff;border-radius:8px;overflow:hidden;}
+.inventory-thumb img{width:100%;height:100%;object-fit:contain;}
+.inventory-thumb.missing{color:#665d50;font-size:10px;text-align:center;padding:8px;}
+.inventory-item-title{font-size:15px;font-weight:700;line-height:1.25;overflow-wrap:anywhere;}
+.inventory-item-meta{color:var(--muted);font-size:12px;line-height:1.35;margin-top:4px;overflow-wrap:anywhere;}
+.inventory-item-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;}
+.inventory-item-actions .diag-btn{padding:7px 9px;}
+.manual-field{margin-top:11px;}
+.manual-field label{display:block;color:var(--muted);font-size:11px;letter-spacing:.06em;text-transform:uppercase;margin-bottom:5px;}
+.manual-field input,.manual-field select,.manual-field textarea{width:100%;padding:11px 12px;border:1px solid var(--line);border-radius:8px;background:#141210;color:var(--text);font:inherit;font-size:14px;}
+.manual-field textarea{min-height:72px;resize:vertical;}
+.manual-two-col{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;}
+.manual-photo-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px;}
+.manual-photo-preview{display:flex;align-items:center;justify-content:center;width:100%;min-height:170px;margin-top:10px;padding:12px;background:#fff;border-radius:10px;overflow:hidden;}
+.manual-photo-preview img{max-width:100%;max-height:240px;width:auto;height:auto;object-fit:contain;}
+.manual-message{margin-top:10px;color:var(--brass-soft);font-size:12px;line-height:1.4;min-height:17px;}
+.manual-actions{display:flex;gap:8px;margin-top:18px;}
+.manual-actions .btn{padding:12px;font-size:14px;}
+.studio-badge{display:inline-block;margin-top:7px;padding:4px 7px;border-radius:5px;background:#e8f5ef;color:#17664e;font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;}
+.product-image-frame{min-height:235px;aspect-ratio:3/4;padding:14px;background:#fff;border:1px solid #e9e4da;}
+.product-image-frame img{width:100%;height:auto;max-width:100%;max-height:100%;flex:1;min-height:0;object-fit:contain;border-radius:0;}
+.product-image-missing{display:flex;align-items:center;justify-content:center;width:100%;height:100%;min-height:190px;color:#665d50;background:#fff;font-size:13px;text-align:center;padding:20px;}
+.source-image-label{color:#665d50;font-weight:600;}
+.result-actions .btn:disabled{opacity:.45;cursor:not-allowed;}
+.result-actions .btn.photo-action{background:#5b57a6;color:#fff;}
+.result-actions .btn.save-action{background:var(--good);color:#08150b;}
+@media (max-width:360px){
+  .manual-two-col{grid-template-columns:1fr;}
+  .inventory-item{grid-template-columns:72px minmax(0,1fr);}
+  .inventory-thumb{width:72px;height:92px;}
+}
+
 </style>
 </head>
 <body>
 
 <div id="app">
-  <h1>Barcode Scanner Test</h1>
+  <h1>Backbar Scanner</h1>
   <div class="app-version" id="app-version" aria-label="Application version"></div>
-  <p class="sub">Scan a beverage barcode to identify liquid stock for bars, pubs, restaurants, and bottle shops.</p>
-  <button class="btn" id="btn-start">Scan Barcode</button>
+  <p class="sub">Mini liquid-stock inventory test — scan, identify, standardize, and save up to 10 products.</p>
+  <div class="inventory-summary">
+    <span>My database · this device</span>
+    <strong id="inventory-count">0 / 10</strong>
+  </div>
+  <div class="home-actions">
+    <button class="btn" id="btn-start">Scan Barcode</button>
+    <button class="btn secondary" id="btn-photo-home">Take photo / AI recognition</button>
+    <button class="btn secondary" id="btn-manual">Manual entry</button>
+    <button class="btn secondary" id="btn-inventory">View inventory</button>
+  </div>
   <div class="engine-note" id="engine-note"></div>
+  <div class="workflow-note">Lookup order: your database → public catalogs/API → Haiku web evidence → photo recognition → manual entry. Every saved image is placed in the same white studio-style frame.</div>
   <div class="diag-tools">
     <div class="diag-actions">
       <button class="diag-btn" id="btn-view-log">View debug log</button>
@@ -99,6 +159,8 @@ p.sub{color:var(--muted);font-size:13.5px;margin:0 0 26px;}
     <div class="diag-note" id="diagnostic-note">Diagnostics sync automatically when online; they remain on this device if offline.</div>
   </div>
 </div>
+<input id="photo-input" type="file" accept="image/*" capture="environment">
+<input id="manual-photo-input" type="file" accept="image/*" capture="environment">
 
 <div class="scan-wrap" id="scan-wrap">
   <div class="scan-top">
@@ -125,9 +187,72 @@ p.sub{color:var(--muted);font-size:13.5px;margin:0 0 26px;}
     <div id="r-body">The decoded barcode will appear here, followed by an online product match when available.</div>
     <div class="result-actions">
       <button class="btn secondary" id="btn-scan-again">Scan again</button>
+      <button class="btn photo-action" id="btn-photo-result">Take photo / AI</button>
+      <button class="btn secondary" id="btn-manual-result">Manual entry</button>
+      <button class="btn save-action" id="btn-save-result" disabled>Save to inventory</button>
       <button class="btn secondary" id="btn-report">Report problem</button>
       <button class="btn" id="btn-copy-result-log">Copy log</button>
       <button class="btn" id="btn-done">Done</button>
+    </div>
+  </div>
+</div>
+
+
+<div class="inventory-card" id="inventory-card">
+  <div class="inventory-inner">
+    <div class="overlay-header">
+      <h2>Mini inventory <span id="inventory-title-count">0 / 10</span></h2>
+      <button class="overlay-close" id="btn-close-inventory" aria-label="Close inventory">&times;</button>
+    </div>
+    <p class="inventory-subtitle">Saved locally on this phone for the prototype. Each product can be edited, photographed, and removed.</p>
+    <div class="inventory-list" id="inventory-list"></div>
+    <div class="manual-actions">
+      <button class="btn" id="btn-inventory-add">Add manual item</button>
+    </div>
+  </div>
+</div>
+
+<div class="manual-card" id="manual-card">
+  <div class="manual-inner">
+    <div class="overlay-header">
+      <h2 id="manual-title">Add inventory item</h2>
+      <button class="overlay-close" id="btn-close-manual" aria-label="Close manual entry">&times;</button>
+    </div>
+    <p class="manual-subtitle">Confirm or correct the product details before saving it to your 10-item test database.</p>
+    <div class="manual-field"><label for="manual-barcode">Barcode (optional)</label><input id="manual-barcode" autocomplete="off"></div>
+    <div class="manual-field"><label for="manual-name">Product name *</label><input id="manual-name" autocomplete="off" placeholder="Fanta Orange"></div>
+    <div class="manual-two-col">
+      <div class="manual-field"><label for="manual-brand">Brand</label><input id="manual-brand" autocomplete="off" placeholder="Fanta"></div>
+      <div class="manual-field"><label for="manual-volume">Bottle / pack size</label><input id="manual-volume" autocomplete="off" placeholder="600ml"></div>
+    </div>
+    <div class="manual-two-col">
+      <div class="manual-field"><label for="manual-variant">Variant / flavour</label><input id="manual-variant" autocomplete="off" placeholder="Orange"></div>
+      <div class="manual-field"><label for="manual-type">Type</label>
+        <select id="manual-type">
+          <option value="">Select type</option>
+          <option>Soft drink / Cooldrink</option><option>Water</option><option>Juice</option><option>Mixer / Tonic</option>
+          <option>Beer</option><option>Cider</option><option>Wine</option><option>Brandy</option><option>Whisky / Whiskey</option>
+          <option>Vodka</option><option>Gin</option><option>Rum</option><option>Tequila</option><option>Liqueur</option><option>Shot</option><option>Other liquid</option>
+        </select>
+      </div>
+    </div>
+    <div class="manual-two-col">
+      <div class="manual-field"><label for="manual-abv">Alcohol strength</label><input id="manual-abv" autocomplete="off" placeholder="0% ABV"></div>
+      <div class="manual-field"><label for="manual-category">Category</label><input id="manual-category" autocomplete="off" placeholder="Cooldrinks"></div>
+    </div>
+    <div class="manual-field"><label for="manual-description">Inventory description</label><textarea id="manual-description" placeholder="Brand, full product name, flavour, size"></textarea></div>
+    <div class="manual-field">
+      <label>Product image</label>
+      <div class="manual-photo-tools">
+        <button class="diag-btn" id="btn-manual-photo">Take / choose photo</button>
+        <span class="barcode-meta">White studio treatment applied on-device</span>
+      </div>
+      <div class="manual-photo-preview" id="manual-photo-preview"><span class="product-image-missing">No image selected yet.</span></div>
+    </div>
+    <div class="manual-message" id="manual-message"></div>
+    <div class="manual-actions">
+      <button class="btn secondary" id="btn-cancel-manual">Cancel</button>
+      <button class="btn" id="btn-save-manual">Confirm & save</button>
     </div>
   </div>
 </div>
@@ -148,7 +273,7 @@ p.sub{color:var(--muted);font-size:13.5px;margin:0 0 26px;}
 (function(){
 "use strict";
 
-const APP_VERSION = "0.4.13";
+const APP_VERSION = "0.5.0";
 const appVersionEl = document.getElementById("app-version");
 if (appVersionEl) appVersionEl.textContent = "Version " + APP_VERSION;
 document.title = "Barcode Scanner Test · v" + APP_VERSION;
@@ -834,18 +959,440 @@ let scanAttempt = 0, scanStartedAt = 0;
 let nativeDetectErrorCount = 0, fallbackDecodeErrorCount = 0;
 let lastResult = null;
 
+
+const INVENTORY_STORAGE_KEY = "backbar_mini_inventory_v1";
+const INVENTORY_MAX_ITEMS = 10;
+const PHOTO_LOOKUP_ENDPOINT = "/.netlify/functions/photo-lookup";
+const MAX_IMAGE_EDGE = 1400;
+const STUDIO_IMAGE_WIDTH = 900;
+const STUDIO_IMAGE_HEIGHT = 1200;
+let inventoryItems = [];
+let manualEditingId = null;
+let manualStudioImageDataUrl = "";
+let manualSourceImageUrl = "";
+let photoLookupInFlight = false;
+
+const inventoryCard = document.getElementById("inventory-card");
+const inventoryList = document.getElementById("inventory-list");
+const inventoryCountEl = document.getElementById("inventory-count");
+const inventoryTitleCountEl = document.getElementById("inventory-title-count");
+const manualCard = document.getElementById("manual-card");
+const manualPhotoPreview = document.getElementById("manual-photo-preview");
+const manualMessage = document.getElementById("manual-message");
+const photoInput = document.getElementById("photo-input");
+const manualPhotoInput = document.getElementById("manual-photo-input");
+
+function readInventory(){
+  try {
+    const raw = localStorage.getItem(INVENTORY_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.slice(0, INVENTORY_MAX_ITEMS) : [];
+  } catch(error) {
+    debugLog("inventory_read_failed", { error:errorDetails(error) });
+    return [];
+  }
+}
+function writeInventory(){
+  try {
+    localStorage.setItem(INVENTORY_STORAGE_KEY, JSON.stringify(inventoryItems.slice(0, INVENTORY_MAX_ITEMS)));
+    updateInventoryUi();
+    return true;
+  } catch(error) {
+    debugLog("inventory_write_failed", { error:errorDetails(error) });
+    setManualMessage("The image may be too large for phone storage. Try taking the photo again.");
+    return false;
+  }
+}
+function updateInventoryUi(){
+  const label = inventoryItems.length + " / " + INVENTORY_MAX_ITEMS;
+  if (inventoryCountEl) inventoryCountEl.textContent = label;
+  if (inventoryTitleCountEl) inventoryTitleCountEl.textContent = label;
+}
+function inventoryProduct(item){
+  return Object.assign({}, item, {
+    source: "My inventory database",
+    matchConfidence: "User-confirmed",
+    scope: "in_scope"
+  });
+}
+function findInventoryByBarcode(barcode){
+  const value = String(barcode || "").trim();
+  if (!value) return null;
+  return inventoryItems.find(item => String(item.barcode || "").trim() === value) || null;
+}
+function inventoryDescription(data){
+  return [data.brand,data.name,data.variant,data.volume,data.abv].filter(Boolean).join(", ");
+}
+function renderInventoryList(){
+  if (!inventoryList) return;
+  inventoryList.innerHTML = "";
+  if (!inventoryItems.length) {
+    const empty = document.createElement("div");
+    empty.className = "inventory-empty";
+    empty.textContent = "No products saved yet. Scan or add your first liquid-stock item.";
+    inventoryList.appendChild(empty);
+    updateInventoryUi();
+    return;
+  }
+  inventoryItems.forEach(item => {
+    const card = document.createElement("div");
+    card.className = "inventory-item";
+    const thumb = document.createElement("div");
+    thumb.className = "inventory-thumb";
+    const src = item.studioImageDataUrl || item.sourceImageUrl || "";
+    if (src) {
+      const image = document.createElement("img");
+      image.src = src;
+      image.alt = item.name || "Inventory product";
+      image.loading = "lazy";
+      thumb.appendChild(image);
+    } else {
+      thumb.classList.add("missing");
+      thumb.textContent = "Studio image";
+    }
+    const details = document.createElement("div");
+    const title = document.createElement("div");
+    title.className = "inventory-item-title";
+    title.textContent = item.name || "Unnamed product";
+    details.appendChild(title);
+    const meta = document.createElement("div");
+    meta.className = "inventory-item-meta";
+    meta.textContent = [item.brand,item.variant,item.volume].filter(Boolean).join(" · ") || "Details pending";
+    details.appendChild(meta);
+    if (item.barcode) {
+      const code = document.createElement("div");
+      code.className = "inventory-item-meta";
+      code.textContent = "Barcode " + item.barcode;
+      details.appendChild(code);
+    }
+    const badge = document.createElement("span");
+    badge.className = "studio-badge";
+    badge.textContent = item.studioImageDataUrl ? "Studio image saved" : "White studio display";
+    details.appendChild(badge);
+    const actions = document.createElement("div");
+    actions.className = "inventory-item-actions";
+    const edit = document.createElement("button");
+    edit.className = "diag-btn";
+    edit.textContent = "Edit";
+    edit.onclick = () => openManualEntry(item);
+    const photo = document.createElement("button");
+    photo.className = "diag-btn";
+    photo.textContent = "Update photo";
+    photo.onclick = () => openManualEntry(item);
+    const remove = document.createElement("button");
+    remove.className = "diag-btn";
+    remove.textContent = "Remove";
+    remove.onclick = () => removeInventoryItem(item.id);
+    actions.append(edit, photo, remove);
+    details.appendChild(actions);
+    card.append(thumb, details);
+    inventoryList.appendChild(card);
+  });
+  updateInventoryUi();
+}
+function openInventory(){
+  resultCard.classList.remove("show");
+  manualCard.classList.remove("show");
+  renderInventoryList();
+  inventoryCard.classList.add("show");
+  debugLog("inventory_opened", { count:inventoryItems.length, maxItems:INVENTORY_MAX_ITEMS });
+}
+function closeInventory(){ inventoryCard.classList.remove("show"); }
+function removeInventoryItem(id){
+  const item = inventoryItems.find(entry => entry.id === id);
+  if (!item || !window.confirm("Remove " + (item.name || "this item") + " from the test inventory?")) return;
+  inventoryItems = inventoryItems.filter(entry => entry.id !== id);
+  writeInventory();
+  renderInventoryList();
+  debugLog("inventory_item_removed", { id:id, barcode:item.barcode || null });
+}
+function clearManualForm(){
+  ["manual-barcode","manual-name","manual-brand","manual-volume","manual-variant","manual-abv","manual-category","manual-description"].forEach(id => {
+    const field = document.getElementById(id);
+    if (field) field.value = "";
+  });
+  const type = document.getElementById("manual-type");
+  if (type) type.value = "";
+  manualStudioImageDataUrl = "";
+  manualSourceImageUrl = "";
+  manualPhotoPreview.innerHTML = '<span class="product-image-missing">No image selected yet.</span>';
+  manualMessage.textContent = "";
+}
+function setManualMessage(message){ if (manualMessage) manualMessage.textContent = message || ""; }
+function setManualField(id,value){
+  const field = document.getElementById(id);
+  if (field) field.value = value || "";
+}
+function openManualEntry(product){
+  const item = product && product.id ? product : null;
+  if (!item && inventoryItems.length >= INVENTORY_MAX_ITEMS) {
+    setManualMessage("The 10-item test limit is full. Remove an item before adding another.");
+    manualCard.classList.add("show");
+    return;
+  }
+  manualEditingId = item ? item.id : null;
+  clearManualForm();
+  const source = product || {};
+  document.getElementById("manual-title").textContent = item ? "Edit inventory item" : "Add inventory item";
+  setManualField("manual-barcode",source.barcode);
+  setManualField("manual-name",source.name);
+  setManualField("manual-brand",source.brand);
+  setManualField("manual-volume",source.volume);
+  setManualField("manual-variant",source.variant);
+  setManualField("manual-abv",source.abv);
+  setManualField("manual-category",source.category);
+  setManualField("manual-description",source.description || inventoryDescription(source));
+  setManualField("manual-type",source.type);
+  manualStudioImageDataUrl = source.studioImageDataUrl || "";
+  manualSourceImageUrl = source.sourceImageUrl || "";
+  const manualPreviewSource = manualStudioImageDataUrl || manualSourceImageUrl;
+  if (manualPreviewSource) {
+    const image = document.createElement("img");
+    image.src = manualPreviewSource;
+    image.alt = "Studio preview";
+    manualPhotoPreview.innerHTML = "";
+    manualPhotoPreview.appendChild(image);
+  }
+  manualCard.classList.add("show");
+  debugLog("manual_entry_opened", { editing:!!item, barcode:source.barcode || null });
+}
+function closeManualEntry(){
+  manualCard.classList.remove("show");
+  manualEditingId = null;
+  manualStudioImageDataUrl = "";
+}
+function saveManualEntry(){
+  const data = {
+    barcode:document.getElementById("manual-barcode").value.trim(),
+    name:document.getElementById("manual-name").value.trim(),
+    brand:document.getElementById("manual-brand").value.trim(),
+    volume:document.getElementById("manual-volume").value.trim(),
+    variant:document.getElementById("manual-variant").value.trim(),
+    type:document.getElementById("manual-type").value,
+    abv:document.getElementById("manual-abv").value.trim(),
+    category:document.getElementById("manual-category").value.trim(),
+    description:document.getElementById("manual-description").value.trim()
+  };
+  if (!data.name) {
+    setManualMessage("Product name is required.");
+    return;
+  }
+  const now = new Date().toISOString();
+  const existing = manualEditingId ? inventoryItems.find(item => item.id === manualEditingId) : null;
+  const record = Object.assign({}, existing || {}, data, {
+    id:existing ? existing.id : "inv-" + Date.now() + "-" + Math.random().toString(16).slice(2),
+    source:"Manual entry",
+    matchConfidence:"User-confirmed",
+    scope:"in_scope",
+    studioImageDataUrl:manualStudioImageDataUrl || (existing && existing.studioImageDataUrl) || "",
+    sourceImageUrl:manualSourceImageUrl || (existing && existing.sourceImageUrl) || "",
+    createdAt:existing && existing.createdAt ? existing.createdAt : now,
+    updatedAt:now
+  });
+  if (existing) {
+    inventoryItems = inventoryItems.map(item => item.id === existing.id ? record : item);
+  } else {
+    inventoryItems.push(record);
+  }
+  if (!writeInventory()) return;
+  debugLog("inventory_item_saved", {
+    id:record.id,
+    barcode:record.barcode || null,
+    name:truncate(record.name,160),
+    editing:!!existing,
+    hasStudioImage:!!record.studioImageDataUrl,
+    count:inventoryItems.length
+  });
+  closeManualEntry();
+  renderInventoryList();
+  if (resultCard.classList.contains("show")) resultCard.classList.remove("show");
+}
+function readAndResizeImage(file){
+  return new Promise((resolve,reject) => {
+    if (!file || !/^image\//i.test(file.type || "")) {
+      reject(new Error("Please choose an image file."));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Could not read the image."));
+    reader.onload = () => {
+      const source = new Image();
+      source.onload = () => {
+        const scale = Math.min(1, MAX_IMAGE_EDGE / Math.max(source.naturalWidth || source.width, source.naturalHeight || source.height));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round((source.naturalWidth || source.width) * scale));
+        canvas.height = Math.max(1, Math.round((source.naturalHeight || source.height) * scale));
+        const context = canvas.getContext("2d");
+        context.fillStyle = "#ffffff";
+        context.fillRect(0,0,canvas.width,canvas.height);
+        context.drawImage(source,0,0,canvas.width,canvas.height);
+        resolve(canvas.toDataURL("image/jpeg",0.8));
+      };
+      source.onerror = () => reject(new Error("This image format could not be decoded by the browser."));
+      source.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+function createStudioImage(sourceDataUrl){
+  return new Promise((resolve,reject) => {
+    const source = new Image();
+    source.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = STUDIO_IMAGE_WIDTH;
+      canvas.height = STUDIO_IMAGE_HEIGHT;
+      const context = canvas.getContext("2d");
+      context.fillStyle = "#ffffff";
+      context.fillRect(0,0,canvas.width,canvas.height);
+      const padding = 80;
+      const scale = Math.min(
+        (canvas.width - padding * 2) / source.width,
+        (canvas.height - padding * 2) / source.height
+      );
+      const width = source.width * scale;
+      const height = source.height * scale;
+      context.drawImage(source,(canvas.width-width)/2,(canvas.height-height)/2,width,height);
+      resolve(canvas.toDataURL("image/jpeg",0.88));
+    };
+    source.onerror = () => reject(new Error("Could not create the studio image."));
+    source.src = sourceDataUrl;
+  });
+}
+function setResultButtonState(options){
+  const opts = options || {};
+  const photo = document.getElementById("btn-photo-result");
+  const manual = document.getElementById("btn-manual-result");
+  const save = document.getElementById("btn-save-result");
+  if (photo) photo.style.display = opts.photo === false ? "none" : "";
+  if (manual) manual.style.display = opts.manual === false ? "none" : "";
+  if (save) {
+    save.style.display = "";
+    save.disabled = !opts.canSave;
+  }
+}
+function saveCurrentResultToInventory(){
+  if (!lastResult || !lastResult.product) {
+    setResultButtonState({ canSave:false, photo:true, manual:true });
+    return;
+  }
+  openManualEntry(lastResult.product);
+}
+function openPhotoLookup(){
+  if (photoLookupInFlight) return;
+  if (!resultCard.classList.contains("show")) {
+    resultCard.classList.add("show");
+    document.getElementById("r-barcode").textContent = "Photo lookup";
+    document.getElementById("r-format").textContent = "Image recognition";
+    document.getElementById("r-body").innerHTML = '<div class="barcode-meta">Choose or take a product photo…</div>';
+  }
+  photoInput.click();
+}
+async function handlePhotoSelected(event){
+  const file = event.target.files && event.target.files[0];
+  event.target.value = "";
+  if (!file) return;
+  try {
+    const sourceDataUrl = await readAndResizeImage(file);
+    const studioImageDataUrl = await createStudioImage(sourceDataUrl);
+    await runPhotoLookup(sourceDataUrl, studioImageDataUrl);
+  } catch(error) {
+    debugLog("photo_prepare_failed", { error:errorDetails(error) });
+    document.getElementById("r-body").innerHTML = '<div class="barcode-note">The photo could not be prepared on this phone. Try a normal JPG or PNG.</div>';
+  }
+}
+async function runPhotoLookup(sourceDataUrl, studioImageDataUrl){
+  if (photoLookupInFlight) return;
+  photoLookupInFlight = true;
+  const barcode = lastResult && lastResult.barcode ? lastResult.barcode : "";
+  const startedAt = performance.now();
+  resultCard.classList.add("show");
+  document.getElementById("r-body").innerHTML = '<div class="barcode-meta">AI is reading the label and checking evidence…</div><div class="barcode-note">The image is resized locally before upload and is not stored by this app.</div>';
+  setResultButtonState({ canSave:false, photo:false, manual:true });
+  debugLog("photo_lookup_started", { barcode:barcode || null, imageProcessing:"local_resize_and_studio_canvas", model:"claude-haiku-4-5-20251001" });
+  try {
+    const response = await fetch(PHOTO_LOOKUP_ENDPOINT, {
+      method:"POST",
+      headers:{ "Content-Type":"application/json" },
+      credentials:"same-origin",
+      body:JSON.stringify({ imageDataUrl:sourceDataUrl, barcode:barcode || null })
+    });
+    const raw = await response.text();
+    let data = null;
+    try { data = raw ? JSON.parse(raw) : null; } catch(error) {}
+    debugLog("photo_lookup_http_response", { status:response.status, ok:response.ok, elapsedMs:Math.round(performance.now()-startedAt) });
+    if (!response.ok || !data || data.ok !== true) throw new Error((data && data.error) || "Photo lookup returned an invalid response");
+    if (data.found && data.product) {
+      const product = Object.assign({}, data.product, { barcode:barcode || data.product.barcode || "", studioImageDataUrl:studioImageDataUrl });
+      lastResult = { barcode:product.barcode, rawValue:product.barcode || "photo", format:"image", product:product, lookup:{status:"found",source:product.source,name:product.name} };
+      debugLog("photo_lookup_completed", { status:"found", name:truncate(product.name,160), brand:truncate(product.brand,100), hasStudioImage:true, sourceUrlCount:Array.isArray(product.sourceUrls)?product.sourceUrls.length:0, elapsedMs:Math.round(performance.now()-startedAt) });
+      renderProductMatch(product);
+    } else {
+      debugLog("photo_lookup_completed", { status:"not_found", sources:data.sources||[], elapsedMs:Math.round(performance.now()-startedAt) });
+      const body = document.getElementById("r-body");
+      body.innerHTML = '<div class="barcode-note">The label could not be identified confidently from this photo.</div><div class="product-source-note">Try a closer, well-lit photo of the front label or use manual entry.</div>';
+      setResultButtonState({ canSave:false, photo:true, manual:true });
+    }
+  } catch(error) {
+    debugLog("photo_lookup_failed", { error:errorDetails(error), elapsedMs:Math.round(performance.now()-startedAt) });
+    document.getElementById("r-body").innerHTML = '<div class="barcode-note">Photo recognition could not be reached. Manual entry is still available.</div>';
+    setResultButtonState({ canSave:false, photo:true, manual:true });
+  } finally {
+    photoLookupInFlight = false;
+  }
+}
+function handleManualPhotoSelected(event){
+  const file = event.target.files && event.target.files[0];
+  event.target.value = "";
+  if (!file) return;
+  readAndResizeImage(file)
+    .then(createStudioImage)
+    .then(dataUrl => {
+      manualStudioImageDataUrl = dataUrl;
+      manualPhotoPreview.innerHTML = "";
+      const image = document.createElement("img");
+      image.src = dataUrl;
+      image.alt = "Studio preview";
+      manualPhotoPreview.appendChild(image);
+      setManualMessage("Studio image prepared. Confirm and save when the details are correct.");
+    })
+    .catch(error => setManualMessage(error.message || "Could not prepare the photo."));
+}
+function closeResult(){
+  resultCard.classList.remove("show");
+}
+function initializeMiniInventory(){
+  inventoryItems = readInventory();
+  updateInventoryUi();
+  debugLog("inventory_initialized", { count:inventoryItems.length, maxItems:INVENTORY_MAX_ITEMS, storage:"localStorage" });
+}
+
 document.getElementById("btn-start").onclick = startScan;
 document.getElementById("btn-close").onclick = () => stopScan(null, "user_closed");
 document.getElementById("btn-scan-again").onclick = () => { resultCard.classList.remove("show"); startScan(); };
+document.getElementById("btn-photo-home").onclick = openPhotoLookup;
+document.getElementById("btn-photo-result").onclick = openPhotoLookup;
+document.getElementById("btn-manual").onclick = () => openManualEntry(null);
+document.getElementById("btn-manual-result").onclick = () => openManualEntry(lastResult && lastResult.product ? lastResult.product : null);
+document.getElementById("btn-save-result").onclick = saveCurrentResultToInventory;
+document.getElementById("btn-inventory").onclick = openInventory;
+document.getElementById("btn-inventory-add").onclick = () => openManualEntry(null);
+document.getElementById("btn-close-inventory").onclick = closeInventory;
+document.getElementById("btn-close-manual").onclick = closeManualEntry;
+document.getElementById("btn-cancel-manual").onclick = closeManualEntry;
+document.getElementById("btn-save-manual").onclick = saveManualEntry;
+document.getElementById("btn-manual-photo").onclick = () => manualPhotoInput.click();
+photoInput.addEventListener("change", handlePhotoSelected);
+manualPhotoInput.addEventListener("change", handleManualPhotoSelected);
 document.getElementById("btn-report").onclick = reportCurrentResult;
 document.getElementById("btn-copy-result-log").onclick = copyDiagnostics;
-document.getElementById("btn-done").onclick = () => resultCard.classList.remove("show");
+document.getElementById("btn-done").onclick = closeResult;
 document.getElementById("btn-view-log").onclick = showDiagnostics;
 document.getElementById("btn-copy-log").onclick = copyDiagnostics;
 document.getElementById("btn-close-diagnostics").onclick = closeDiagnostics;
 document.getElementById("btn-copy-log-modal").onclick = copyDiagnostics;
+initializeMiniInventory();
 updateDiagnosticNote();
-debugLog("page_loaded", environmentSnapshot());
+debugLog("page_loaded", Object.assign({}, environmentSnapshot(), { inventoryCount:inventoryItems.length, inventoryMax:INVENTORY_MAX_ITEMS }));
 
 
 function startScan(){
@@ -1404,8 +1951,10 @@ function showResult(barcode, metadata){
     barcode:barcode,
     rawValue:rawValue,
     format:format,
+    product:null,
     lookup:{ status:"pending" }
   };
+  setResultButtonState({ canSave:false, photo:true, manual:true });
 
   document.getElementById("r-barcode").textContent = rawValue;
   document.getElementById("r-format").textContent = "Format: " + format;
@@ -1449,14 +1998,17 @@ function renderProductImage(body, product){
 
   const label = document.createElement("div");
   label.className = "source-image-label";
-  label.textContent = product.sourceImageUrl
-    ? "Source image — standardization comes in Phase 3"
-    : "Studio image slot — Phase 3";
+  const imageSource = product.studioImageDataUrl || product.sourceImageUrl || "";
+  label.textContent = product.studioImageDataUrl
+    ? "Studio image — white backdrop, standardized size"
+    : product.sourceImageUrl
+      ? "Source image — displayed in standardized white studio frame"
+      : "Studio image slot — take a product photo";
   frame.appendChild(label);
 
-  if (product.sourceImageUrl && /^https?:\/\//i.test(product.sourceImageUrl)) {
+  if (imageSource && /^(?:data:image\/|https?:\/\/)/i.test(imageSource)) {
     const image = document.createElement("img");
-    image.src = product.sourceImageUrl;
+    image.src = imageSource;
     image.alt = product.name || "Source product image";
     image.loading = "eager";
     image.referrerPolicy = "no-referrer";
@@ -1464,12 +2016,12 @@ function renderProductImage(body, product){
       debugLog("product_image_load_failed", {
         source:product.source || "unknown",
         barcode:product.barcode,
-        imageUrl:truncate(product.sourceImageUrl, 500)
+        imageUrl:truncate(imageSource, 500)
       });
       frame.innerHTML = "";
       const missingLabel = document.createElement("div");
       missingLabel.className = "source-image-label";
-      missingLabel.textContent = "Source image could not be loaded — Phase 3 studio image slot";
+      missingLabel.textContent = "Source image could not be loaded — take a product photo for the studio image";
       frame.appendChild(missingLabel);
     };
     frame.appendChild(image);
@@ -1486,6 +2038,8 @@ function renderProductImage(body, product){
 function renderProductMatch(product){
   const body = document.getElementById("r-body");
   body.innerHTML = "";
+  lastResult = Object.assign({}, lastResult || {}, { product:product, lookup:{ status:"found", source:product.source || "unknown" } });
+  setResultButtonState({ canSave:true, photo:true, manual:true });
 
   const source = document.createElement("div");
   source.className = "barcode-meta";
@@ -1568,6 +2122,7 @@ function renderProductMatch(product){
 function renderNoProductMatch(barcode, sources, context){
   const body = document.getElementById("r-body");
   body.innerHTML = "";
+  setResultButtonState({ canSave:false, photo:true, manual:true });
   const outOfScopeProduct = context && context.outOfScopeProduct;
   const message = document.createElement("div");
   message.className = "barcode-note";
@@ -1624,6 +2179,7 @@ function renderNoProductMatch(barcode, sources, context){
 function renderProductLookupError(){
   const body = document.getElementById("r-body");
   body.innerHTML = "";
+  setResultButtonState({ canSave:false, photo:true, manual:true });
   const message = document.createElement("div");
   message.className = "barcode-note";
   message.textContent =
@@ -1798,21 +2354,33 @@ async function lookupProduct(barcode, metadata){
   debugLog("product_lookup_started", {
     barcode:barcode,
     engine:metadata && metadata.engine ? metadata.engine : "unknown",
-    sources:["Open Food Facts v3", "UPCitemdb trial", "upc.dev public", "GTINHub fallback", "AI web evidence (Haiku, max 2 searches)"],
+    sources:["My inventory database", "Open Food Facts v3", "UPCitemdb trial", "upc.dev public", "GTINHub fallback", "AI web evidence (Haiku, max 2 searches)"],
     preloaded:!!(metadata && metadata.preloadedLookup)
   });
 
   try {
     let result;
-    if (metadata && metadata.preloadedLookup) {
+    const localItem = findInventoryByBarcode(barcode);
+    if (localItem) {
+      debugLog("inventory_lookup_hit", { barcode:barcode, itemId:localItem.id, name:truncate(localItem.name,160) });
       result = {
-        data:metadata.preloadedLookup,
+        data:{
+          ok:true,
+          found:true,
+          scope:"liquid_stock",
+          barcode:barcode,
+          product:inventoryProduct(localItem),
+          sources:[{ source:"My inventory database", status:200, ok:true, found:true }]
+        },
         status:200,
         ok:true,
         elapsedMs:0,
         preloaded:true
       };
+    } else if (metadata && metadata.preloadedLookup) {
+      result = { data:metadata.preloadedLookup, status:200, ok:true, elapsedMs:0, preloaded:true };
     } else {
+      debugLog("inventory_lookup_miss", { barcode:barcode, count:inventoryItems.length });
       result = await requestProductLookupData(barcode);
     }
     const data = result.data;
@@ -1838,14 +2406,13 @@ async function lookupProduct(barcode, metadata){
         volume:truncate(data.product.volume || "", 80),
         abv:truncate(data.product.abv || "", 80),
         hasSourceImage:!!data.product.sourceImageUrl,
+        hasStudioImage:!!data.product.studioImageDataUrl,
         matchConfidence:truncate(data.product.matchConfidence || "", 40),
         evidence:truncate(data.product.evidence || "", 320),
         sourceUrlCount:Array.isArray(data.product.sourceUrls) ? data.product.sourceUrls.length : 0,
         elapsedMs:Math.round(performance.now() - startedAt)
       };
-      debugLog("product_lookup_completed", Object.assign({}, lastResult.lookup, {
-        sources:data.sources || []
-      }));
+      debugLog("product_lookup_completed", Object.assign({}, lastResult.lookup, { sources:data.sources || [] }));
       renderProductMatch(data.product);
     } else {
       lastResult.lookup = {
@@ -1859,17 +2426,8 @@ async function lookupProduct(barcode, metadata){
       renderNoProductMatch(barcode, data.sources, data);
     }
   } catch(error) {
-    lastResult.lookup = {
-      status:"error",
-      error:errorDetails(error),
-      elapsedMs:Math.round(performance.now() - startedAt)
-    };
-    debugLog("product_lookup_failed", {
-      source:source,
-      barcode:barcode,
-      error:errorDetails(error),
-      elapsedMs:Math.round(performance.now() - startedAt)
-    });
+    lastResult.lookup = { status:"error", error:errorDetails(error), elapsedMs:Math.round(performance.now() - startedAt) };
+    debugLog("product_lookup_failed", { source:source, barcode:barcode, error:errorDetails(error), elapsedMs:Math.round(performance.now() - startedAt) });
     renderProductLookupError();
   }
 }
