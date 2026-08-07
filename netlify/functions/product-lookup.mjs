@@ -87,8 +87,24 @@ function parseNumber(value) {
 
 function normalizeAbv(...values) {
   for (const value of values) {
-    const number = parseNumber(value);
+    const raw = text(value, 160);
+    if (!raw) continue;
+
+    const directNumeric =
+      typeof value === "number" ||
+      /^[+-]?\d+(?:[.,]\d+)?$/.test(raw);
+    const explicitAlcohol = raw.match(
+      /(?:abv|a\.?b\.?v\?|alcohol|alc(?:ohol)?|alc\/vol)[^0-9]{0,16}(\d+(?:[.,]\d+)?)/i,
+    ) || raw.match(
+      /(\d+(?:[.,]\d+)?)\s*%\s*(?:abv|a\.?b\.?v\?|alcohol|alc(?:ohol)?|vol)/i,
+    );
+    if (!directNumeric && !explicitAlcohol) continue;
+
+    const number = directNumeric
+      ? parseNumber(raw)
+      : Number(explicitAlcohol[1].replace(",", "."));
     if (!Number.isFinite(number)) continue;
+
     const percentage = number > 0 && number <= 1 ? number * 100 : number;
     if (percentage > 0 && percentage <= 100) {
       return String(Number(percentage.toFixed(2))) + "% ABV";
@@ -226,7 +242,13 @@ function normalizeUPCItem(data, barcode) {
     brand: firstText(item.brand, item.manufacturer),
     variant: "",
     volume,
-    abv: normalizeAbv(name, item.description),
+    abv: normalizeAbv(
+      item.abv,
+      item.alcohol,
+      item.alcohol_content,
+      item.alcohol_percentage,
+      item.alcohol_strength,
+    ),
   };
 
   return {
@@ -248,8 +270,21 @@ function normalizeUPCItem(data, barcode) {
 }
 
 
+function isProviderErrorText(value) {
+  return /(?:bad gateway|gateway timeout|service unavailable|internal server error|not found|unauthorized|forbidden|rate limit|error\s*\d{3})/i
+    .test(text(value, 500));
+}
+
 function normalizeBarcodeCatalogProduct(data, barcode, source, fallbackUrl) {
   const root = data && typeof data === "object" ? data : null;
+  const providerError = firstText(
+    root && root.error,
+    root && root.error_message,
+    root && root.errorMessage,
+    root && root.message,
+  );
+  if (isProviderErrorText(providerError)) return null;
+
   const payload = root && root.data && typeof root.data === "object"
     ? root.data
     : root;
@@ -316,11 +351,15 @@ function normalizeBarcodeCatalogProduct(data, barcode, source, fallbackUrl) {
     item.alcohol,
     item.alcohol_content,
     item.alcohol_percentage,
-    name,
-    description,
+    item.alcohol_strength,
   );
 
-  if (!name && !brand) return null;
+  if (
+    (!name && !brand) ||
+    isProviderErrorText(name) ||
+    isProviderErrorText(brand) ||
+    isProviderErrorText(description)
+  ) return null;
 
   const fields = { name, brand, variant, volume, abv };
 
@@ -344,16 +383,22 @@ function normalizeBarcodeCatalogProduct(data, barcode, source, fallbackUrl) {
       item.link,
       fallbackUrl,
     ),
-    sourceImageUrl: findImage(
-      item.image_url,
-      item.imageUrl,
-      item.image,
-      item.images,
-      item.thumbnail,
-      item.thumbnail_url,
-      item.photo,
-      item.photos,
-    ),
+    // Third-party catalog image endpoints have returned unrelated products
+    // for valid beverage barcodes. Keep their text match, but do not display
+    // an unverified image; Open Food Facts and AI evidence remain trusted image
+    // sources until image verification is added.
+    sourceImageUrl: source === "Open Food Facts" || source === "UPCitemdb"
+      ? findImage(
+          item.image_url,
+          item.imageUrl,
+          item.image,
+          item.images,
+          item.thumbnail,
+          item.thumbnail_url,
+          item.photo,
+          item.photos,
+        )
+      : "",
     matchConfidence: firstText(
       item.confidence,
       item.confidence_score,
@@ -925,16 +970,16 @@ export default async function productLookup(request) {
     const catalogResults = await Promise.all(catalogRequests);
     for (const catalogResult of catalogResults) {
       let catalogProduct = null;
-      if (catalogResult.source === "UPCitemdb trial") {
+      if (catalogResult.ok && catalogResult.source === "UPCitemdb trial") {
         catalogProduct = normalizeUPCItem(catalogResult.data, barcode);
-      } else if (catalogResult.source === "upc.dev") {
+      } else if (catalogResult.ok && catalogResult.source === "upc.dev") {
         catalogProduct = normalizeBarcodeCatalogProduct(
           catalogResult.data,
           barcode,
           "upc.dev",
           "https://upc.dev/product/" + encodeURIComponent(barcode),
         );
-      } else if (catalogResult.source === "GTINHub") {
+      } else if (catalogResult.ok && catalogResult.source === "GTINHub") {
         catalogProduct = normalizeBarcodeCatalogProduct(
           catalogResult.data,
           barcode,
