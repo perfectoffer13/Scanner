@@ -21,6 +21,13 @@ const NON_LIQUID_KEYWORDS = [
   "soap", "shampoo", "cosmetic", "lotion", "cream", "toothpaste",
   "battery", "sponge", "diaper", "detergent", "cleaner", "washing powder"
 ];
+const NON_ALCOHOLIC_LIQUID_HINTS = [
+  "soft drink", "cooldrink", "soda", "cola", "lemonade", "energy drink",
+  "sports drink", "isotonic", "juice", "water", "tonic", "mixer",
+  "ginger ale", "ginger beer", "cordial", "syrup", "milk", "coffee",
+  "tea", "kombucha", "smoothie", "powerade", "gatorade", "coca-cola",
+  "coke", "fanta", "sprite", "pepsi", "monster", "red bull", "7up"
+];
 
 function text(value, maxLength = MAX_TEXT) {
   if (value === null || value === undefined) return "";
@@ -251,7 +258,16 @@ function normalizeUPCItem(data, barcode) {
     ),
   };
 
-  return {
+  if (
+    (!fields.name && !fields.brand) ||
+    isProviderErrorText(fields.name) ||
+    isProviderErrorText(fields.brand) ||
+    isProviderErrorText(item.description)
+  ) {
+    return null;
+  }
+
+  return sanitizeProduct({
     barcode,
     name: fields.name,
     brand: fields.brand,
@@ -266,13 +282,67 @@ function normalizeUPCItem(data, barcode) {
     source: "UPCitemdb",
     sourceRecordUrl: "https://www.upcitemdb.com/upc/" + encodeURIComponent(barcode),
     sourceImageUrl: findImage(item.images),
-  };
+  });
 }
 
 
 function isProviderErrorText(value) {
-  return /(?:bad gateway|gateway timeout|service unavailable|internal server error|not found|unauthorized|forbidden|rate limit|error\s*\d{3})/i
-    .test(text(value, 500));
+  const candidate = text(value, 500).toLowerCase();
+  if (!candidate) return false;
+  return (
+    /(?:bad gateway|gateway timeout|service unavailable|internal server error|not found|unauthorized|forbidden|rate limit|error\s*\d{3})/i
+      .test(candidate) ||
+    candidate.includes("<html") ||
+    candidate.startsWith("<!doctype") ||
+    candidate.startsWith('{"error') ||
+    candidate.startsWith('{"message')
+  );
+}
+
+function isClearlyNonAlcoholicProduct(product) {
+  const haystack = [
+    product && product.name,
+    product && product.brand,
+    product && product.variant,
+    product && product.type,
+    product && product.category,
+    product && product.description,
+  ].map((value) => text(value).toLowerCase()).join(" ");
+  if (!haystack) return false;
+
+  if (/\b(?:brandy|cognac|armagnac|whisky|whiskey|bourbon|scotch|vodka|gin|rum|tequila|mezcal|liqueur|liquor|schnapps|amaro|wine|champagne|prosecco|beer|lager|ale|cider|spirit|shot|hard seltzer)\b/i.test(haystack)) {
+    return false;
+  }
+  if (/\b(?:non[-\s]?alcoholic|alcohol[-\s]?free|zero[-\s]?alcohol)\b/i.test(haystack)) {
+    return true;
+  }
+  return NON_ALCOHOLIC_LIQUID_HINTS.some((keyword) => haystack.includes(keyword));
+}
+
+function sanitizeProduct(product) {
+  if (!product || typeof product !== "object") return null;
+  if (
+    isProviderErrorText(product.name) ||
+    isProviderErrorText(product.brand) ||
+    isProviderErrorText(product.description)
+  ) {
+    return null;
+  }
+
+  const clean = { ...product };
+  if (isClearlyNonAlcoholicProduct(clean)) clean.abv = "";
+
+  // Catalog image endpoints have repeatedly returned a different product
+  // for a valid beverage barcode. Barcode lookup must never show that image;
+  // only evidence-backed AI/photo results can supply the visual later.
+  if (
+    clean.source &&
+    clean.source !== "AI web evidence" &&
+    clean.source !== "My inventory database"
+  ) {
+    clean.sourceImageUrl = "";
+  }
+  return clean;
 }
 
 function normalizeBarcodeCatalogProduct(data, barcode, source, fallbackUrl) {
@@ -363,7 +433,7 @@ function normalizeBarcodeCatalogProduct(data, barcode, source, fallbackUrl) {
 
   const fields = { name, brand, variant, volume, abv };
 
-  return {
+  return sanitizeProduct({
     barcode,
     name,
     brand,
@@ -409,10 +479,12 @@ function normalizeBarcodeCatalogProduct(data, barcode, source, fallbackUrl) {
       item.evidence,
     ),
     scope: "",
-  };
+  });
 }
 
 function mergeProducts(primary, secondary, barcode) {
+  primary = sanitizeProduct(primary);
+  secondary = sanitizeProduct(secondary);
   if (!primary) return secondary;
   if (!secondary) return primary;
 
@@ -430,14 +502,19 @@ function mergeProducts(primary, secondary, barcode) {
     description: firstText(primary.description, secondary.description),
     source: primary.source + " + " + secondary.source,
     sourceRecordUrl: firstText(primary.sourceRecordUrl, secondary.sourceRecordUrl),
-    sourceImageUrl: firstText(primary.sourceImageUrl, secondary.sourceImageUrl),
+    sourceImageUrl:
+      primary.source === "AI web evidence"
+        ? primary.sourceImageUrl
+        : secondary.source === "AI web evidence"
+          ? secondary.sourceImageUrl
+          : "",
     sourceUrls: Array.from(new Set([...(primary.sourceUrls || []), ...(secondary.sourceUrls || [])])),
     matchConfidence: firstText(primary.matchConfidence, secondary.matchConfidence),
     evidence: firstText(primary.evidence, secondary.evidence),
     scope: firstText(primary.scope, secondary.scope),
   };
   merged.description = merged.description || productDescription(merged, merged);
-  return merged;
+  return sanitizeProduct(merged);
 }
 
 
@@ -445,6 +522,8 @@ function hasUsableProduct(product) {
   return Boolean(
     product &&
     product.name &&
+    !isProviderErrorText(product.name) &&
+    !isProviderErrorText(product.brand) &&
     (product.brand || product.category || product.type),
   );
 }
@@ -659,6 +738,14 @@ function normalizeAIProduct(data, barcode, citationUrls) {
   if (!data || data.found !== true) return null;
 
   const name = firstText(data.name, data.product_name, data.title);
+  if (
+    !name ||
+    isProviderErrorText(name) ||
+    isProviderErrorText(data.brand) ||
+    isProviderErrorText(data.description)
+  ) {
+    return null;
+  }
   const confidence = ["high", "medium", "low"].includes(String(data.confidence).toLowerCase())
     ? String(data.confidence).toLowerCase()
     : "low";
@@ -690,7 +777,7 @@ function normalizeAIProduct(data, barcode, citationUrls) {
     abv: firstText(data.abv, data.alcohol_strength, data.alcohol),
   };
 
-  return {
+  return sanitizeProduct({
     barcode,
     name: fields.name,
     brand: fields.brand,
@@ -709,7 +796,7 @@ function normalizeAIProduct(data, barcode, citationUrls) {
     matchConfidence: confidence,
     evidence: firstText(data.evidence),
     scope: firstText(data.scope, "unknown"),
-  };
+  });
 }
 
 async function lookupWithAI(barcode, catalogProducts = []) {
@@ -1070,10 +1157,10 @@ export default async function productLookup(request) {
     error: openFoodFactsResult.error || null,
   });
 
-  let product = normalizeOpenFoodFacts(
+  let product = sanitizeProduct(normalizeOpenFoodFacts(
     openFoodFactsResult.data,
     barcode,
-  );
+  ));
   const catalogCandidates = [];
   if (product) catalogCandidates.push(product);
   let catalogConflict = false;
