@@ -1,8 +1,8 @@
 import { getStore } from "@netlify/blobs";
 
 const STORE_NAME = "diagnostics";
-const MAX_BODY_CHARS = 120000;
-const MAX_EVENTS = 200;
+const MAX_BODY_CHARS = 180000;
+const MAX_EVENTS = 600;
 const MAX_EVENT_CHARS = 5000;
 const ALLOWED_ORIGIN = "https://backbar-product-scanner.netlify.app";
 
@@ -31,6 +31,11 @@ function cleanValue(value, depth = 0) {
   return truncate(value, 100);
 }
 
+function normalizeSessionId(value) {
+  return truncate(value || "", 120)
+    .replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+
 function response(status, body) {
   return new Response(JSON.stringify(body), {
     status,
@@ -55,7 +60,11 @@ export default async function diagnostics(request) {
     }
 
     try {
-      const latest = await store.get("latest.json", {
+      const requestedSessionId = normalizeSessionId(url.searchParams.get("sessionId"));
+      const objectKey = requestedSessionId
+        ? `sessions/${requestedSessionId}.json`
+        : "latest.json";
+      const latest = await store.get(objectKey, {
         consistency: "strong",
         type: "text",
       });
@@ -108,13 +117,32 @@ export default async function diagnostics(request) {
     return response(400, { ok: false, error: "Diagnostic object required" });
   }
 
-  const sessionId =
-    truncate(incoming.sessionId || "unknown-session", 120)
-      .replace(/[^a-zA-Z0-9._-]/g, "_") || "unknown-session";
+  const sessionId = normalizeSessionId(incoming.sessionId || "unknown-session") || "unknown-session";
   const savedAt = new Date().toISOString();
-  const events = Array.isArray(incoming.events)
+  const sessionKey = `sessions/${sessionId}.json`;
+  let existingEvents = [];
+  try {
+    const previous = await store.get(sessionKey, {
+      consistency: "strong",
+      type: "text",
+    });
+    const previousPayload = previous ? JSON.parse(previous) : null;
+    existingEvents = Array.isArray(previousPayload?.events)
+      ? previousPayload.events
+      : [];
+  } catch {
+    existingEvents = [];
+  }
+
+  const incomingEvents = Array.isArray(incoming.events)
     ? incoming.events.slice(-MAX_EVENTS).map((event) => cleanValue(event))
     : [];
+  const eventMap = new Map();
+  for (const event of [...existingEvents, ...incomingEvents]) {
+    const eventKey = JSON.stringify(event);
+    if (eventKey) eventMap.set(eventKey, event);
+  }
+  const events = Array.from(eventMap.values()).slice(-MAX_EVENTS);
 
   const payload = {
     diagnosticSchemaVersion: Number(incoming.diagnosticSchemaVersion) || 1,
@@ -123,6 +151,7 @@ export default async function diagnostics(request) {
     exportedAt: truncate(incoming.exportedAt || "", 80),
     uploadedAt: savedAt,
     uploadReason: truncate(incoming.uploadReason || "scheduled", 120),
+    appVersion: truncate(incoming.appVersion || "", 40),
     clientPath: truncate(incoming.clientPath || "", 300),
     environment: cleanValue(incoming.environment || {}),
     events,
@@ -134,7 +163,6 @@ export default async function diagnostics(request) {
   }
 
   try {
-    const sessionKey = `sessions/${sessionId}.json`;
     await store.set(sessionKey, serialized);
     await store.set("latest.json", serialized);
 
