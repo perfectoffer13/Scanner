@@ -38,9 +38,10 @@ p.sub{color:var(--muted);font-size:13.5px;margin:0 0 26px;}
 
 .status{padding:10px 16px;text-align:center;color:var(--muted);font-size:13px;background:#0a0908;min-height:20px;}
 
-.result-card{position:fixed;inset:0;z-index:30;background:rgba(6,5,4,.92);display:none;align-items:center;justify-content:center;padding:24px;}
+.result-card{position:fixed;inset:0;z-index:30;background:rgba(6,5,4,.92);display:none;align-items:flex-start;justify-content:center;padding:24px 18px 150px;overflow-y:auto;-webkit-overflow-scrolling:touch;}
 .result-card.show{display:flex;}
-.result-inner{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;max-width:400px;width:100%;text-align:left;}
+.result-inner{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px 22px 136px;max-width:400px;width:100%;margin:0 auto;text-align:left;}
+#result-card .result-actions{position:fixed;z-index:31;left:50%;bottom:14px;transform:translateX(-50%);width:calc(100% - 36px);max-width:356px;margin:0;padding:10px;background:rgba(28,25,20,.98);border:1px solid var(--line);border-radius:12px;box-shadow:0 8px 26px rgba(0,0,0,.45);}
 .result-inner .label{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--brass);margin-bottom:4px;}
 .result-inner .barcode{font-family:monospace;font-size:17px;color:var(--text);margin-bottom:8px;white-space:pre-wrap;word-break:break-word;}
 .result-inner img{width:64px;height:64px;object-fit:contain;background:#0a0908;border-radius:8px;margin-bottom:10px;}
@@ -147,7 +148,7 @@ p.sub{color:var(--muted);font-size:13.5px;margin:0 0 26px;}
 (function(){
 "use strict";
 
-const APP_VERSION = "0.4.8";
+const APP_VERSION = "0.4.9";
 const appVersionEl = document.getElementById("app-version");
 if (appVersionEl) appVersionEl.textContent = "Version " + APP_VERSION;
 document.title = "Barcode Scanner Test · v" + APP_VERSION;
