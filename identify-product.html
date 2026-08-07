@@ -278,7 +278,7 @@ p.sub{color:var(--muted);font-size:13.5px;margin:0 0 26px;}
 (function(){
 "use strict";
 
-const APP_VERSION = "0.5.1";
+const APP_VERSION = "0.5.2";
 const appVersionEl = document.getElementById("app-version");
 if (appVersionEl) appVersionEl.textContent = "Version " + APP_VERSION;
 document.title = "Barcode Scanner Test · v" + APP_VERSION;
@@ -302,7 +302,7 @@ document.getElementById("engine-note").textContent = USE_NATIVE
 
 const DIAGNOSTIC_SCHEMA_VERSION = 1;
 const DIAGNOSTIC_KEY = "backbar_identify_diagnostics_v1";
-const MAX_DIAGNOSTIC_EVENTS = 200;
+const MAX_DIAGNOSTIC_EVENTS = 600;
 const SESSION_ID = (window.crypto && typeof window.crypto.randomUUID === "function")
   ? window.crypto.randomUUID()
   : "session-" + Date.now() + "-" + Math.random().toString(16).slice(2);
@@ -399,7 +399,7 @@ function buildDiagnosticUploadPayload(reason){
     return null;
   }
   payload.events = Array.isArray(payload.events)
-    ? payload.events.slice(-120)
+    ? payload.events.slice(-600)
     : [];
   payload.appVersion = APP_VERSION;
   payload.uploadReason = truncate(reason || "scheduled", 120);
@@ -980,6 +980,7 @@ const LOOKUP_TIMEOUT_MS = 30000;
 const AUTO_FALLBACK_DELAY_MS = 750;
 let workflowToken = 0;
 let automaticFallbackTimer = null;
+let automaticPhotoPromptTimer = null;
 
 const inventoryCard = document.getElementById("inventory-card");
 const inventoryList = document.getElementById("inventory-list");
@@ -1277,8 +1278,13 @@ function clearAutomaticFallbackTimer(){
     automaticFallbackTimer = null;
   }
 }
+function clearAutomaticPhotoPromptTimer(){
+  if (automaticPhotoPromptTimer) clearTimeout(automaticPhotoPromptTimer);
+  automaticPhotoPromptTimer = null;
+}
 function cancelAutomaticFallback(reason){
   clearAutomaticFallbackTimer();
+  clearAutomaticPhotoPromptTimer();
   workflowToken++;
   if (reason) debugLog("workflow_auto_cancelled", { reason:reason });
 }
@@ -1358,7 +1364,10 @@ function setResultButtonState(options){
   const photo = document.getElementById("btn-photo-result");
   const manual = document.getElementById("btn-manual-result");
   const save = document.getElementById("btn-save-result");
-  if (photo) photo.style.display = opts.photo === false ? "none" : "";
+  if (photo) {
+    photo.style.display = opts.photo === false ? "none" : "";
+    photo.textContent = opts.photoLabel || "Take photo / AI";
+  }
   if (manual) manual.style.display = opts.manual === false ? "none" : "";
   if (save) {
     save.style.display = "";
@@ -1390,11 +1399,34 @@ function openPhotoLookup(options){
       : "Step 4 of 5 · Photo recognition — manual override selected",
     "pending"
   );
+  setResultButtonState({
+    canSave:false,
+    photo:true,
+    manual:true,
+    photoLabel:automatic ? "Take photo / AI (next step)" : "Take photo / AI"
+  });
+  if (automatic) {
+    const body = document.getElementById("r-body");
+    const prompt = document.createElement("div");
+    prompt.className = "barcode-note";
+    prompt.textContent = "The browser may block an automatic camera prompt. Tap the highlighted photo button below to continue.";
+    body.appendChild(prompt);
+  }
   photoInput.dataset.workflowAutomatic = automatic ? "true" : "false";
   debugLog("photo_input_requested", { automatic:automatic, barcode:lastResult && lastResult.barcode ? lastResult.barcode : null });
   photoInput.click();
+  if (automatic) {
+    automaticPhotoPromptTimer = setTimeout(() => {
+      automaticPhotoPromptTimer = null;
+      if (!photoLookupInFlight && !photoInput.files?.length) {
+        debugLog("photo_prompt_timeout", { reason:"no_photo_selected_after_automatic_prompt" });
+        scheduleAutomaticManualFallback("photo_prompt_timeout");
+      }
+    }, 15000);
+  }
 }
 async function handlePhotoSelected(event){
+  clearAutomaticPhotoPromptTimer();
   const file = event.target.files && event.target.files[0];
   const automatic = event.target.dataset.workflowAutomatic === "true";
   event.target.dataset.workflowAutomatic = "false";
