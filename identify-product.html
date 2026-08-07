@@ -147,7 +147,7 @@ p.sub{color:var(--muted);font-size:13.5px;margin:0 0 26px;}
 (function(){
 "use strict";
 
-const APP_VERSION = "0.4.7";
+const APP_VERSION = "0.4.8";
 const appVersionEl = document.getElementById("app-version");
 if (appVersionEl) appVersionEl.textContent = "Version " + APP_VERSION;
 document.title = "Barcode Scanner Test · v" + APP_VERSION;
@@ -162,10 +162,12 @@ const diagnosticNote = document.getElementById("diagnostic-note");
 const diagnosticsCard = document.getElementById("diagnostics-card");
 const diagnosticsOutput = document.getElementById("diagnostics-output");
 
-const USE_NATIVE = ("BarcodeDetector" in window);
+const PREFERRED_SCANNER_ENGINE = "html5-qrcode";
+const AUTO_ZOOM_PREFERRED = 2;
+const USE_NATIVE = PREFERRED_SCANNER_ENGINE === "native" && ("BarcodeDetector" in window);
 document.getElementById("engine-note").textContent = USE_NATIVE
-  ? "Using continuous autofocus."
-  : "Using the fallback scanner with continuous autofocus.";
+  ? "Using the native camera decoder."
+  : "Using html5-qrcode with the rear camera and supported autofocus/zoom controls."; 
 
 const DIAGNOSTIC_SCHEMA_VERSION = 1;
 const DIAGNOSTIC_KEY = "backbar_identify_diagnostics_v1";
@@ -395,7 +397,14 @@ function focusState(capabilities, settings){
       : null
   };
 }
-function requestFocus(engine, capabilities, settings, applyConstraints, reason, readback){
+function normalizeFocusPoint(point){
+  const x = Number(point && point.x);
+  const y = Number(point && point.y);
+  return Number.isFinite(x) && Number.isFinite(y)
+    ? { x:Math.min(1, Math.max(0, x)), y:Math.min(1, Math.max(0, y)) }
+    : { x:0.5, y:0.5 };
+}
+function requestFocus(engine, capabilities, settings, applyConstraints, reason, readback, point){
   const requestGeneration = focusRequestGeneration;
   const requestIsCurrent = () =>
     requestGeneration === focusRequestGeneration && !restarting;
@@ -403,6 +412,15 @@ function requestFocus(engine, capabilities, settings, applyConstraints, reason, 
   const hint = document.getElementById("tap-hint");
   const continuousSupported = !state.supportedModes.length ||
     state.supportedModes.indexOf("continuous") !== -1;
+  const singleShotSupported = state.supportedModes.indexOf("single-shot") !== -1;
+  const requestedMode = continuousSupported
+    ? "continuous"
+    : (singleShotSupported ? "single-shot" : "continuous");
+  const capabilityMismatch = !!(
+    state.supportedModes.length &&
+    state.supportedModes.indexOf(requestedMode) === -1
+  );
+  const focusPoint = normalizeFocusPoint(point);
 
   debugLog("focus_capabilities_detected", {
     engine:engine,
@@ -410,7 +428,10 @@ function requestFocus(engine, capabilities, settings, applyConstraints, reason, 
     supportedModes:state.supportedModes,
     currentMode:state.currentMode,
     focusDistance:state.focusDistance,
-    continuousSupported:continuousSupported
+    requestedMode:requestedMode,
+    focusPoint:focusPoint,
+    continuousSupported:continuousSupported,
+    singleShotSupported:singleShotSupported
   });
 
   if (state.supportedModes.length && !continuousSupported) {
@@ -418,37 +439,42 @@ function requestFocus(engine, capabilities, settings, applyConstraints, reason, 
       engine:engine,
       reason:reason,
       requested:"continuous",
+      selectedMode:requestedMode,
       supported:state.supportedModes,
       currentMode:state.currentMode
     }, 5000);
   }
 
   if (!applyConstraints) {
+    if (hint) hint.textContent = "Camera autofocus controls are unavailable";
     logThrottled("focus_request_unavailable", {
       engine:engine,
       reason:reason,
-      requested:"continuous"
+      requested:requestedMode,
+      supportedModes:state.supportedModes
     }, 5000);
     return;
   }
 
   if (!requestIsCurrent()) return;
-  if (hint) hint.textContent = "Autofocus is active";
+  if (hint) hint.textContent = "Requesting autofocus…";
   debugLog("focus_request_started", {
     engine:engine,
     reason:reason,
-    requested:"continuous",
-    strategy:"ideal_only"
+    requested:requestedMode,
+    strategy:"ideal_mode_with_center_point",
+    focusPoint:focusPoint,
+    capabilityMismatch:capabilityMismatch
   });
 
   function recordFailure(error){
     if (!requestIsCurrent()) return;
-    if (hint) hint.textContent = "Continuous autofocus could not be enabled";
+    if (hint) hint.textContent = "Camera autofocus could not be enabled";
     debugLog("focus_request_failed", {
       engine:engine,
       reason:reason,
-      requested:"continuous",
-      strategy:"ideal_only",
+      requested:requestedMode,
+      strategy:"ideal_mode_with_center_point",
       supportedModes:state.supportedModes,
       currentMode:state.currentMode,
       error:errorDetails(error)
@@ -457,9 +483,12 @@ function requestFocus(engine, capabilities, settings, applyConstraints, reason, 
 
   let result;
   try {
-    // "ideal" keeps the camera running when a browser reports incomplete
-    // capabilities, while still asking the hardware for continuous autofocus.
-    result = applyConstraints({ focusMode:{ ideal:"continuous" } });
+    // Never request manual focus. The point is only an autofocus/exposure hint;
+    // browsers that do not implement it should ignore this ideal constraint.
+    result = applyConstraints({
+      focusMode:{ ideal:requestedMode },
+      pointsOfInterest:{ ideal:[focusPoint] }
+    });
   } catch(error) {
     recordFailure(error);
     return;
@@ -472,23 +501,27 @@ function requestFocus(engine, capabilities, settings, applyConstraints, reason, 
     const verifiedMode = verification && verification.settings
       ? verification.settings.focusMode || null
       : null;
-    const verified = !verifiedMode || verifiedMode === "continuous";
+    const verified = !capabilityMismatch &&
+      (!verifiedMode || verifiedMode === requestedMode);
     if (hint) {
       hint.textContent = verified
         ? "Autofocus is active"
-        : "Autofocus is running (browser readback limited)";
+        : "Autofocus is not exposed by this browser";
     }
     debugLog(verified ? "focus_request_succeeded" : "focus_request_unverified", {
       engine:engine,
       reason:reason,
-      mode:"continuous",
-      strategy:"ideal_only",
+      mode:requestedMode,
+      strategy:"ideal_mode_with_center_point",
+      focusPoint:focusPoint,
       verifiedMode:verifiedMode,
-      supportedModes:state.supportedModes
+      supportedModes:state.supportedModes,
+      capabilityMismatch:capabilityMismatch
     });
   }).catch(recordFailure);
 }
-function requestNativeFocus(reason){
+
+function requestNativeFocus(reason, point){
   const track = nativeTrack;
   if (!track) return;
   const snapshot = trackSnapshot(track) || {};
@@ -498,10 +531,11 @@ function requestNativeFocus(reason){
     snapshot.settings || {},
     constraints => track.applyConstraints(constraints),
     reason,
-    () => trackSnapshot(track)
+    () => trackSnapshot(track),
+    point
   );
 }
-function requestFallbackFocus(reason){
+function requestFallbackFocus(reason, point){
   const scanner = fallbackScanner;
   if (!scanner) return;
   try {
@@ -512,7 +546,115 @@ function requestFallbackFocus(reason){
       ? scanner.getRunningTrackSettings()
       : {};
     requestFocus(
-      "html5-qrcode-fallback",
+      "html5-qrcode",
+      capabilities,
+      settings,
+      constraints => scanner.applyVideoConstraints(constraints),
+      reason,
+      () => ({
+        settings:scanner.getRunningTrackSettings
+          ? scanner.getRunningTrackSettings()
+          : {}
+      }),
+      point
+    );
+  } catch(error) {
+    debugLog("focus_details_failed", {
+      engine:"html5-qrcode",
+      reason:reason,
+      error:errorDetails(error)
+    });
+  }
+}
+function requestZoom(engine, capabilities, settings, applyConstraints, reason, readback){
+  const zoomRange = capabilities && capabilities.zoom;
+  const maxZoom = Number(zoomRange && zoomRange.max);
+  const minZoom = Number.isFinite(Number(zoomRange && zoomRange.min))
+    ? Number(zoomRange.min)
+    : 1;
+  const currentZoom = Number(settings && settings.zoom);
+  if (!Number.isFinite(maxZoom) || maxZoom <= minZoom || maxZoom <= 1) {
+    logThrottled("zoom_request_unavailable", {
+      engine:engine,
+      reason:reason,
+      preferredZoom:AUTO_ZOOM_PREFERRED,
+      currentZoom:Number.isFinite(currentZoom) ? currentZoom : null,
+      zoom:zoomRange || null
+    }, 5000);
+    return;
+  }
+  const targetZoom = Math.min(
+    maxZoom,
+    Math.max(minZoom, AUTO_ZOOM_PREFERRED)
+  );
+  debugLog("zoom_request_started", {
+    engine:engine,
+    reason:reason,
+    requestedZoom:targetZoom,
+    currentZoom:Number.isFinite(currentZoom) ? currentZoom : null,
+    maxZoom:maxZoom,
+    strategy:"advanced_constraint"
+  });
+  let result;
+  try {
+    // Chrome commonly accepts zoom through advanced constraints.
+    result = applyConstraints({ advanced:[{ zoom:targetZoom }] });
+  } catch(error) {
+    debugLog("zoom_request_failed", {
+      engine:engine,
+      reason:reason,
+      requestedZoom:targetZoom,
+      error:errorDetails(error)
+    });
+    return;
+  }
+  Promise.resolve(result).then(() => {
+    let verification = null;
+    try { verification = readback ? readback() : null; } catch(error) {}
+    const verifiedZoom = verification && verification.settings
+      ? Number(verification.settings.zoom)
+      : null;
+    debugLog("zoom_request_succeeded", {
+      engine:engine,
+      reason:reason,
+      requestedZoom:targetZoom,
+      verifiedZoom:Number.isFinite(verifiedZoom) ? verifiedZoom : null,
+      maxZoom:maxZoom
+    });
+  }).catch(error => {
+    debugLog("zoom_request_failed", {
+      engine:engine,
+      reason:reason,
+      requestedZoom:targetZoom,
+      error:errorDetails(error)
+    });
+  });
+}
+function requestNativeZoom(reason){
+  const track = nativeTrack;
+  if (!track) return;
+  const snapshot = trackSnapshot(track) || {};
+  requestZoom(
+    "native",
+    snapshot.capabilities || {},
+    snapshot.settings || {},
+    constraints => track.applyConstraints(constraints),
+    reason,
+    () => trackSnapshot(track)
+  );
+}
+function requestFallbackZoom(reason){
+  const scanner = fallbackScanner;
+  if (!scanner) return;
+  try {
+    const capabilities = scanner.getRunningTrackCapabilities
+      ? scanner.getRunningTrackCapabilities()
+      : {};
+    const settings = scanner.getRunningTrackSettings
+      ? scanner.getRunningTrackSettings()
+      : {};
+    requestZoom(
+      "html5-qrcode",
       capabilities,
       settings,
       constraints => scanner.applyVideoConstraints(constraints),
@@ -524,8 +666,8 @@ function requestFallbackFocus(reason){
       })
     );
   } catch(error) {
-    debugLog("focus_details_failed", {
-      engine:"html5-qrcode-fallback",
+    debugLog("zoom_details_failed", {
+      engine:"html5-qrcode",
       reason:reason,
       error:errorDetails(error)
     });
@@ -548,7 +690,7 @@ function invalidateFocusRequests(){
 function scheduleFocusReassertion(reason, delayMs){
   clearFocusReassertion();
   if (restarting || (!nativeTrack && !fallbackScanner)) return;
-  const engine = nativeTrack ? "native" : "html5-qrcode-fallback";
+  const engine = nativeTrack ? "native" : "html5-qrcode";
   const delay = Number.isFinite(delayMs) ? delayMs : 1800;
   debugLog("focus_reassert_scheduled", {
     engine:engine,
@@ -574,7 +716,8 @@ function environmentSnapshot(){
     secureContext:!!window.isSecureContext,
     mediaDevices:!!navigator.mediaDevices,
     getUserMedia:!!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia),
-    nativeBarcodeDetector:USE_NATIVE,
+    nativeBarcodeDetector:("BarcodeDetector" in window),
+    scannerEngine:USE_NATIVE ? "native" : "html5-qrcode",
     fallbackLibraryLoaded:typeof Html5Qrcode !== "undefined",
     page:(window.location.origin || "") + (window.location.pathname || "")
   };
@@ -729,7 +872,7 @@ function startScan(){
 
   debugLog("scan_started", {
     attempt:scanAttempt,
-    engine:USE_NATIVE ? "native" : "html5-qrcode-fallback",
+    engine:USE_NATIVE ? "native" : "html5-qrcode",
     secureContext:!!window.isSecureContext,
     mediaDevices:!!navigator.mediaDevices,
     getUserMedia:!!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)
@@ -753,7 +896,9 @@ function startNative(){
       width:{ ideal:1920 },
       height:{ ideal:1080 },
       frameRate:{ ideal:30, max:30 },
-      focusMode:{ ideal:"continuous" }
+      focusMode:{ ideal:"continuous" },
+      zoom:{ ideal:AUTO_ZOOM_PREFERRED },
+      pointsOfInterest:{ ideal:[{ x:0.5, y:0.5 }] }
     },
     audio:false
   };
@@ -787,6 +932,7 @@ function startNative(){
     });
 
     requestNativeFocus("startup");
+    requestNativeZoom("startup");
     scheduleFocusReassertion("native_startup", 1800);
 
     try {
@@ -888,9 +1034,17 @@ function toggleTorch(){
 }
 // Tap-to-nudge focus: some phones lock focus after a moment; re-asserting the
 // constraint on tap is a cheap way to force a refocus without restarting the stream.
-document.getElementById("video-region").addEventListener("click", () => {
-  if (USE_NATIVE) requestNativeFocus("tap");
-  else requestFallbackFocus("tap");
+document.getElementById("video-region").addEventListener("click", (event) => {
+  const region = document.getElementById("video-region");
+  const rect = region.getBoundingClientRect();
+  const point = rect.width > 0 && rect.height > 0
+    ? {
+        x:(event.clientX - rect.left) / rect.width,
+        y:(event.clientY - rect.top) / rect.height
+      }
+    : { x:0.5, y:0.5 };
+  if (USE_NATIVE) requestNativeFocus("tap", point);
+  else requestFallbackFocus("tap", point);
 });
 
 
@@ -917,19 +1071,21 @@ function stopNative(){
 function startFallback(){
   if (typeof Html5Qrcode === "undefined") {
     statusEl.textContent = "Scanner library failed to load — check your connection and reload.";
-    debugLog("scanner_library_missing", { engine:"html5-qrcode-fallback" });
+    debugLog("scanner_library_missing", { engine:"html5-qrcode" });
     return;
   }
   fallbackScanner = new Html5Qrcode("reader");
   const config = {
     fps:10,
-    qrbox:{ width:260, height:140 },
+    qrbox:{ width:320, height:180 },
     videoConstraints:{
       facingMode:{ ideal:"environment" },
       width:{ ideal:1920 },
       height:{ ideal:1080 },
       frameRate:{ ideal:30, max:30 },
       focusMode:{ ideal:"continuous" },
+      zoom:{ ideal:AUTO_ZOOM_PREFERRED },
+      pointsOfInterest:{ ideal:[{ x:0.5, y:0.5 }] }
     },
     formatsToSupport:[
       Html5QrcodeSupportedFormats.EAN_13, Html5QrcodeSupportedFormats.EAN_8,
@@ -939,7 +1095,7 @@ function startFallback(){
     ]
   };
   debugLog("camera_request_started", {
-    engine:"html5-qrcode-fallback",
+    engine:"html5-qrcode",
     config:{
       fps:config.fps,
       qrbox:config.qrbox,
@@ -948,19 +1104,35 @@ function startFallback(){
   });
   Html5Qrcode.getCameras().then(cams => {
     debugLog("camera_listed", {
-      engine:"html5-qrcode-fallback",
+      engine:"html5-qrcode",
       count:cams.length,
       labels:cams.map(camera => truncate(camera.label || "", 120))
     });
     if (!cams.length) throw new Error("No camera found");
-    const selected = cams.find(camera => /back|rear|environment/i.test(camera.label)) || cams[cams.length - 1];
+    const rearCameras = cams.filter(camera => {
+      const label = String(camera.label || "");
+      return /back|rear|environment/i.test(label) && !/front|user/i.test(label);
+    });
+    const selectableCameras = rearCameras.length ? rearCameras : cams;
+    const selected = selectableCameras
+      .slice()
+      .sort((a, b) => {
+        const score = (camera) => {
+          const label = String(camera.label || "");
+          let value = 0;
+          if (/main|primary/i.test(label)) value += 20;
+          if (/macro|tele|ultra.?wide|wide.?angle/i.test(label)) value -= 20;
+          return value;
+        };
+        return score(b) - score(a);
+      })[0] || cams[cams.length - 1];
     debugLog("camera_selected", {
-      engine:"html5-qrcode-fallback",
+      engine:"html5-qrcode",
       cameraIdAvailable:!!selected.id,
       cameraLabel:truncate(selected.label || "", 120)
     });
     return fallbackScanner.start(selected.id, config, decodedText => {
-      onDecoded(decodedText, { engine:"html5-qrcode-fallback", format:null });
+      onDecoded(decodedText, { engine:"html5-qrcode", format:null });
     }, onFallbackDecodeFailure);
   }).then(() => {
     try {
@@ -971,38 +1143,39 @@ function startFallback(){
         ? fallbackScanner.getRunningTrackSettings()
         : {};
       debugLog("camera_stream_ready", {
-        engine:"html5-qrcode-fallback",
+        engine:"html5-qrcode",
         settings:pick(settings, ["width","height","frameRate","facingMode","focusMode","focusDistance","torch","zoom"]),
         capabilities:pick(caps, ["width","height","frameRate","facingMode","focusMode","focusDistance","torch","zoom"])
       });
       requestFallbackFocus("startup");
-        scheduleFocusReassertion("fallback_startup", 1800);
+      requestFallbackZoom("startup");
+      scheduleFocusReassertion("fallback_startup", 1800);
       if (caps && caps.torch) {
         const torchBtn = document.getElementById("btn-torch");
         torchBtn.style.display = "inline-block";
         torchBtn.onclick = () => {
           const on = !torchBtn.classList.contains("on");
-          debugLog("torch_request", { engine:"html5-qrcode-fallback", enabled:on });
+          debugLog("torch_request", { engine:"html5-qrcode", enabled:on });
           fallbackScanner.applyVideoConstraints({ advanced:[{ torch:on }] }).then(() => {
             torchBtn.classList.toggle("on", on);
-            debugLog("torch_request_succeeded", { engine:"html5-qrcode-fallback", enabled:on });
+            debugLog("torch_request_succeeded", { engine:"html5-qrcode", enabled:on });
           }).catch(error => {
-            debugLog("torch_request_failed", { engine:"html5-qrcode-fallback", enabled:on, error:errorDetails(error) });
+            debugLog("torch_request_failed", { engine:"html5-qrcode", enabled:on, error:errorDetails(error) });
           });
         };
       }
     } catch(error) {
-      debugLog("fallback_camera_details_failed", { engine:"html5-qrcode-fallback", error:errorDetails(error) });
+      debugLog("fallback_camera_details_failed", { engine:"html5-qrcode", error:errorDetails(error) });
     }
   }).catch(error => {
     statusEl.textContent = "Couldn't access the camera: " + (error.message || error);
-    debugLog("camera_open_failed", { engine:"html5-qrcode-fallback", error:errorDetails(error) });
+    debugLog("camera_open_failed", { engine:"html5-qrcode", error:errorDetails(error) });
   });
 }
 function onFallbackDecodeFailure(message){
   fallbackDecodeErrorCount++;
   logThrottled("fallback_decode_error", {
-    engine:"html5-qrcode-fallback",
+    engine:"html5-qrcode",
     occurrences:fallbackDecodeErrorCount,
     message:truncate(message || "No barcode detected", 320)
   }, 5000);
@@ -1012,17 +1185,17 @@ function stopFallback(callback){
   invalidateFocusRequests();
   if (fallbackScanner) {
     const scanner = fallbackScanner;
-    debugLog("camera_stream_stopping", { engine:"html5-qrcode-fallback" });
+    debugLog("camera_stream_stopping", { engine:"html5-qrcode" });
     scanner.stop().then(() => {
       try { scanner.clear(); } catch(error) {
-        debugLog("fallback_scanner_clear_failed", { engine:"html5-qrcode-fallback", error:errorDetails(error) });
+        debugLog("fallback_scanner_clear_failed", { engine:"html5-qrcode", error:errorDetails(error) });
       }
       fallbackScanner = null;
-      debugLog("camera_stream_stopped", { engine:"html5-qrcode-fallback" });
+      debugLog("camera_stream_stopped", { engine:"html5-qrcode" });
       if (callback) callback();
     }).catch(error => {
       fallbackScanner = null;
-      debugLog("camera_stream_stop_failed", { engine:"html5-qrcode-fallback", error:errorDetails(error) });
+      debugLog("camera_stream_stop_failed", { engine:"html5-qrcode", error:errorDetails(error) });
       if (callback) callback();
     });
   } else if (callback) {
@@ -1202,7 +1375,7 @@ function stopScan(callback, reason){
   const stopReason = reason || "unknown";
   debugLog("scan_stopping", {
     attempt:scanAttempt,
-    engine:USE_NATIVE ? "native" : "html5-qrcode-fallback",
+    engine:USE_NATIVE ? "native" : "html5-qrcode",
     reason:stopReason,
     elapsedMs:scanStartedAt ? Math.round(performance.now() - scanStartedAt) : null
   });
