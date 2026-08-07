@@ -88,6 +88,10 @@ p.sub{color:var(--muted);font-size:13.5px;margin:0 0 26px;}
 .home-actions{display:grid;gap:10px;width:100%;}
 .home-actions .btn{margin:0;}
 .workflow-note{margin-top:14px;color:var(--muted);font-size:11.5px;line-height:1.45;}
+.workflow-status{margin-top:12px;padding:9px 11px;border:1px solid var(--line);border-radius:8px;background:#141210;color:var(--muted);font-size:12px;line-height:1.35;text-align:left;}
+.workflow-status.pending{border-color:var(--brass);color:var(--brass-soft);}
+.workflow-status.success{border-color:var(--good);color:#9bd1a8;}
+.workflow-status.warning{border-color:var(--bad);color:#e6a08d;}
 #photo-input,#manual-photo-input{display:none;}
 .inventory-card,.manual-card{position:fixed;inset:0;z-index:45;background:rgba(6,5,4,.96);display:none;align-items:flex-start;justify-content:center;padding:18px;overflow-y:auto;-webkit-overflow-scrolling:touch;}
 .inventory-card.show,.manual-card.show{display:flex;}
@@ -150,7 +154,7 @@ p.sub{color:var(--muted);font-size:13.5px;margin:0 0 26px;}
     <button class="btn secondary" id="btn-inventory">View inventory</button>
   </div>
   <div class="engine-note" id="engine-note"></div>
-  <div class="workflow-note">Lookup order: your database → public catalogs/API → Haiku web evidence → photo recognition → manual entry. Every saved image is placed in the same white studio-style frame.</div>
+  <div class="workflow-note">Automatic flow: database → public catalogs/API → Haiku web evidence → photo recognition → manual entry. Manual buttons remain available as overrides at every stage.</div>
   <div class="diag-tools">
     <div class="diag-actions">
       <button class="diag-btn" id="btn-view-log">View debug log</button>
@@ -184,6 +188,7 @@ p.sub{color:var(--muted);font-size:13.5px;margin:0 0 26px;}
     <div class="label">Decoded value</div>
     <div class="barcode" id="r-barcode">—</div>
     <div class="barcode-meta" id="r-format">Format: —</div>
+    <div class="workflow-status pending" id="workflow-status" aria-live="polite">Step 2–3 of 5 · Checking the item automatically…</div>
     <div id="r-body">The decoded barcode will appear here, followed by an online product match when available.</div>
     <div class="result-actions">
       <button class="btn secondary" id="btn-scan-again">Scan again</button>
@@ -273,7 +278,7 @@ p.sub{color:var(--muted);font-size:13.5px;margin:0 0 26px;}
 (function(){
 "use strict";
 
-const APP_VERSION = "0.5.0";
+const APP_VERSION = "0.5.1";
 const appVersionEl = document.getElementById("app-version");
 if (appVersionEl) appVersionEl.textContent = "Version " + APP_VERSION;
 document.title = "Barcode Scanner Test · v" + APP_VERSION;
@@ -971,6 +976,10 @@ let manualEditingId = null;
 let manualStudioImageDataUrl = "";
 let manualSourceImageUrl = "";
 let photoLookupInFlight = false;
+const LOOKUP_TIMEOUT_MS = 30000;
+const AUTO_FALLBACK_DELAY_MS = 750;
+let workflowToken = 0;
+let automaticFallbackTimer = null;
 
 const inventoryCard = document.getElementById("inventory-card");
 const inventoryList = document.getElementById("inventory-list");
@@ -1091,6 +1100,7 @@ function renderInventoryList(){
   updateInventoryUi();
 }
 function openInventory(){
+  cancelAutomaticFallback("inventory_opened");
   resultCard.classList.remove("show");
   manualCard.classList.remove("show");
   renderInventoryList();
@@ -1123,7 +1133,9 @@ function setManualField(id,value){
   const field = document.getElementById(id);
   if (field) field.value = value || "";
 }
-function openManualEntry(product){
+function openManualEntry(product, options){
+  const automatic = options && options.automatic === true;
+  if (!automatic) cancelAutomaticFallback("manual_override");
   const item = product && product.id ? product : null;
   if (!item && inventoryItems.length >= INVENTORY_MAX_ITEMS) {
     setManualMessage("The 10-item test limit is full. Remove an item before adding another.");
@@ -1154,9 +1166,10 @@ function openManualEntry(product){
     manualPhotoPreview.appendChild(image);
   }
   manualCard.classList.add("show");
-  debugLog("manual_entry_opened", { editing:!!item, barcode:source.barcode || null });
+  debugLog("manual_entry_opened", { editing:!!item, automatic:automatic, barcode:source.barcode || null });
 }
 function closeManualEntry(){
+  cancelAutomaticFallback("manual_entry_closed");
   manualCard.classList.remove("show");
   manualEditingId = null;
   manualStudioImageDataUrl = "";
@@ -1258,6 +1271,88 @@ function createStudioImage(sourceDataUrl){
     source.src = sourceDataUrl;
   });
 }
+function clearAutomaticFallbackTimer(){
+  if (automaticFallbackTimer) {
+    clearTimeout(automaticFallbackTimer);
+    automaticFallbackTimer = null;
+  }
+}
+function cancelAutomaticFallback(reason){
+  clearAutomaticFallbackTimer();
+  workflowToken++;
+  if (reason) debugLog("workflow_auto_cancelled", { reason:reason });
+}
+function updateWorkflowStatus(message, state){
+  const status = document.getElementById("workflow-status");
+  if (!status) return;
+  status.textContent = message || "";
+  status.className = "workflow-status" + (state ? " " + state : "");
+}
+function startWorkflowSession(){
+  clearAutomaticFallbackTimer();
+  workflowToken++;
+  return workflowToken;
+}
+function scheduleAutomaticPhotoFallback(reason, details){
+  clearAutomaticFallbackTimer();
+  const token = workflowToken;
+  updateWorkflowStatus("Step 3 of 5 failed — automatically preparing photo recognition…", "warning");
+  debugLog("workflow_auto_fallback_scheduled", Object.assign({
+    from:"internet_api_ai",
+    to:"photo_recognition",
+    reason:reason,
+    delayMs:AUTO_FALLBACK_DELAY_MS
+  }, details || {}));
+  automaticFallbackTimer = setTimeout(() => {
+    automaticFallbackTimer = null;
+    if (token !== workflowToken || photoLookupInFlight || manualCard.classList.contains("show")) {
+      debugLog("workflow_auto_fallback_skipped", {
+        from:"internet_api_ai",
+        to:"photo_recognition",
+        reason:"workflow_interrupted"
+      });
+      return;
+    }
+    debugLog("workflow_auto_advanced", {
+      from:"internet_api_ai",
+      to:"photo_recognition",
+      reason:reason
+    });
+    updateWorkflowStatus("Step 4 of 5 · Photo recognition — take a clear front-label photo", "pending");
+    openPhotoLookup({ automatic:true });
+  }, AUTO_FALLBACK_DELAY_MS);
+}
+function scheduleAutomaticManualFallback(reason, details){
+  clearAutomaticFallbackTimer();
+  const token = workflowToken;
+  updateWorkflowStatus("Step 4 of 5 failed — automatically opening manual entry…", "warning");
+  debugLog("workflow_auto_fallback_scheduled", Object.assign({
+    from:"photo_recognition",
+    to:"manual_entry",
+    reason:reason,
+    delayMs:AUTO_FALLBACK_DELAY_MS
+  }, details || {}));
+  automaticFallbackTimer = setTimeout(() => {
+    automaticFallbackTimer = null;
+    if (token !== workflowToken || manualCard.classList.contains("show")) {
+      debugLog("workflow_auto_fallback_skipped", {
+        from:"photo_recognition",
+        to:"manual_entry",
+        reason:"workflow_interrupted"
+      });
+      return;
+    }
+    const barcode = lastResult && lastResult.barcode ? lastResult.barcode : "";
+    debugLog("workflow_auto_advanced", {
+      from:"photo_recognition",
+      to:"manual_entry",
+      reason:reason
+    });
+    updateWorkflowStatus("Step 5 of 5 · Manual entry — confirm the product before saving", "pending");
+    openManualEntry({ barcode:barcode }, { automatic:true });
+  }, AUTO_FALLBACK_DELAY_MS);
+}
+
 function setResultButtonState(options){
   const opts = options || {};
   const photo = document.getElementById("btn-photo-result");
@@ -1277,32 +1372,54 @@ function saveCurrentResultToInventory(){
   }
   openManualEntry(lastResult.product);
 }
-function openPhotoLookup(){
+function openPhotoLookup(options){
+  const opts = options || {};
+  const automatic = opts.automatic === true;
   if (photoLookupInFlight) return;
+  if (!automatic) cancelAutomaticFallback("photo_override");
   if (!resultCard.classList.contains("show")) {
+    lastResult = null;
     resultCard.classList.add("show");
     document.getElementById("r-barcode").textContent = "Photo lookup";
     document.getElementById("r-format").textContent = "Image recognition";
     document.getElementById("r-body").innerHTML = '<div class="barcode-meta">Choose or take a product photo…</div>';
   }
+  updateWorkflowStatus(
+    automatic
+      ? "Step 4 of 5 · Photo recognition — take a clear front-label photo"
+      : "Step 4 of 5 · Photo recognition — manual override selected",
+    "pending"
+  );
+  photoInput.dataset.workflowAutomatic = automatic ? "true" : "false";
+  debugLog("photo_input_requested", { automatic:automatic, barcode:lastResult && lastResult.barcode ? lastResult.barcode : null });
   photoInput.click();
 }
 async function handlePhotoSelected(event){
   const file = event.target.files && event.target.files[0];
+  const automatic = event.target.dataset.workflowAutomatic === "true";
+  event.target.dataset.workflowAutomatic = "false";
   event.target.value = "";
-  if (!file) return;
+  if (!file) {
+    if (automatic) {
+      debugLog("photo_step_cancelled", { reason:"automatic_photo_picker_cancelled" });
+      scheduleAutomaticManualFallback("photo_picker_cancelled");
+    }
+    return;
+  }
   try {
     const sourceDataUrl = await readAndResizeImage(file);
     const studioImageDataUrl = await createStudioImage(sourceDataUrl);
     await runPhotoLookup(sourceDataUrl, studioImageDataUrl);
   } catch(error) {
     debugLog("photo_prepare_failed", { error:errorDetails(error) });
-    document.getElementById("r-body").innerHTML = '<div class="barcode-note">The photo could not be prepared on this phone. Try a normal JPG or PNG.</div>';
+    document.getElementById("r-body").innerHTML = '<div class="barcode-note">The photo could not be prepared on this phone. Moving to manual entry.</div>';
+    scheduleAutomaticManualFallback("photo_prepare_failed", { error:errorDetails(error) });
   }
 }
 async function runPhotoLookup(sourceDataUrl, studioImageDataUrl){
   if (photoLookupInFlight) return;
   photoLookupInFlight = true;
+  const runToken = workflowToken;
   const barcode = lastResult && lastResult.barcode ? lastResult.barcode : "";
   const startedAt = performance.now();
   resultCard.classList.add("show");
@@ -1320,22 +1437,30 @@ async function runPhotoLookup(sourceDataUrl, studioImageDataUrl){
     let data = null;
     try { data = raw ? JSON.parse(raw) : null; } catch(error) {}
     debugLog("photo_lookup_http_response", { status:response.status, ok:response.ok, elapsedMs:Math.round(performance.now()-startedAt) });
+    if (runToken !== workflowToken) {
+      debugLog("photo_lookup_ignored", { reason:"manual_override_or_new_workflow", elapsedMs:Math.round(performance.now()-startedAt) });
+      return;
+    }
     if (!response.ok || !data || data.ok !== true) throw new Error((data && data.error) || "Photo lookup returned an invalid response");
     if (data.found && data.product) {
       const product = Object.assign({}, data.product, { barcode:barcode || data.product.barcode || "", studioImageDataUrl:studioImageDataUrl });
       lastResult = { barcode:product.barcode, rawValue:product.barcode || "photo", format:"image", product:product, lookup:{status:"found",source:product.source,name:product.name} };
       debugLog("photo_lookup_completed", { status:"found", name:truncate(product.name,160), brand:truncate(product.brand,100), hasStudioImage:true, sourceUrlCount:Array.isArray(product.sourceUrls)?product.sourceUrls.length:0, elapsedMs:Math.round(performance.now()-startedAt) });
+      updateWorkflowStatus("Step 4 of 5 · Photo recognition found a candidate — confirm before saving", "success");
       renderProductMatch(product);
     } else {
       debugLog("photo_lookup_completed", { status:"not_found", sources:data.sources||[], elapsedMs:Math.round(performance.now()-startedAt) });
       const body = document.getElementById("r-body");
       body.innerHTML = '<div class="barcode-note">The label could not be identified confidently from this photo.</div><div class="product-source-note">Try a closer, well-lit photo of the front label or use manual entry.</div>';
       setResultButtonState({ canSave:false, photo:true, manual:true });
+      scheduleAutomaticManualFallback("photo_no_verified_match", { sourceCount:Array.isArray(data.sources) ? data.sources.length : 0 });
     }
   } catch(error) {
+    if (runToken !== workflowToken) return;
     debugLog("photo_lookup_failed", { error:errorDetails(error), elapsedMs:Math.round(performance.now()-startedAt) });
-    document.getElementById("r-body").innerHTML = '<div class="barcode-note">Photo recognition could not be reached. Manual entry is still available.</div>';
+    document.getElementById("r-body").innerHTML = '<div class="barcode-note">Photo recognition could not be reached. Moving to manual entry.</div>';
     setResultButtonState({ canSave:false, photo:true, manual:true });
+    scheduleAutomaticManualFallback("photo_lookup_failed", { error:errorDetails(error) });
   } finally {
     photoLookupInFlight = false;
   }
@@ -1358,6 +1483,7 @@ function handleManualPhotoSelected(event){
     .catch(error => setManualMessage(error.message || "Could not prepare the photo."));
 }
 function closeResult(){
+  cancelAutomaticFallback("result_closed");
   resultCard.classList.remove("show");
 }
 function initializeMiniInventory(){
@@ -1372,7 +1498,11 @@ document.getElementById("btn-scan-again").onclick = () => { resultCard.classList
 document.getElementById("btn-photo-home").onclick = openPhotoLookup;
 document.getElementById("btn-photo-result").onclick = openPhotoLookup;
 document.getElementById("btn-manual").onclick = () => openManualEntry(null);
-document.getElementById("btn-manual-result").onclick = () => openManualEntry(lastResult && lastResult.product ? lastResult.product : null);
+document.getElementById("btn-manual-result").onclick = () => openManualEntry(
+  lastResult && lastResult.product
+    ? lastResult.product
+    : { barcode:lastResult && lastResult.barcode ? lastResult.barcode : "" }
+);
 document.getElementById("btn-save-result").onclick = saveCurrentResultToInventory;
 document.getElementById("btn-inventory").onclick = openInventory;
 document.getElementById("btn-inventory-add").onclick = () => openManualEntry(null);
@@ -1400,6 +1530,7 @@ function startScan(){
     debugLog("scan_start_blocked", { reason:"camera_restarting", attempt:scanAttempt });
     return;
   }
+  cancelAutomaticFallback("new_scan");
   lastCode = null;
   matchCount = 0;
   candidateStartedAt = 0;
@@ -1945,6 +2076,7 @@ function stopScan(callback, reason){
 
 function showResult(barcode, metadata){
   const meta = metadata || {};
+  startWorkflowSession();
   const rawValue = meta.rawValue === undefined ? String(barcode) : String(meta.rawValue);
   const format = meta.format || "unknown";
   lastResult = {
@@ -1955,6 +2087,7 @@ function showResult(barcode, metadata){
     lookup:{ status:"pending" }
   };
   setResultButtonState({ canSave:false, photo:true, manual:true });
+  updateWorkflowStatus("Step 2–3 of 5 · Checking your database, catalogues, and AI evidence…", "pending");
 
   document.getElementById("r-barcode").textContent = rawValue;
   document.getElementById("r-format").textContent = "Format: " + format;
@@ -2040,6 +2173,7 @@ function renderProductMatch(product){
   body.innerHTML = "";
   lastResult = Object.assign({}, lastResult || {}, { product:product, lookup:{ status:"found", source:product.source || "unknown" } });
   setResultButtonState({ canSave:true, photo:true, manual:true });
+  updateWorkflowStatus("Verified product record — confirm details and save to inventory", "success");
 
   const source = document.createElement("div");
   source.className = "barcode-meta";
@@ -2123,6 +2257,7 @@ function renderNoProductMatch(barcode, sources, context){
   const body = document.getElementById("r-body");
   body.innerHTML = "";
   setResultButtonState({ canSave:false, photo:true, manual:true });
+  updateWorkflowStatus("Step 3 of 5 did not produce a verified in-scope match", "warning");
   const outOfScopeProduct = context && context.outOfScopeProduct;
   const message = document.createElement("div");
   message.className = "barcode-note";
@@ -2180,6 +2315,7 @@ function renderProductLookupError(){
   const body = document.getElementById("r-body");
   body.innerHTML = "";
   setResultButtonState({ canSave:false, photo:true, manual:true });
+  updateWorkflowStatus("Step 3 of 5 failed — moving automatically to photo recognition…", "warning");
   const message = document.createElement("div");
   message.className = "barcode-note";
   message.textContent =
@@ -2194,8 +2330,9 @@ async function requestProductLookupData(barcode){
   try {
     if ("AbortController" in window) controller = new AbortController();
     timeoutId = setTimeout(() => {
+      debugLog("product_lookup_timeout", { barcode:barcode, timeoutMs:LOOKUP_TIMEOUT_MS });
       if (controller) controller.abort();
-    }, 45000);
+    }, LOOKUP_TIMEOUT_MS);
     const response = await fetch(
       PRODUCT_LOOKUP_ENDPOINT + "?barcode=" + encodeURIComponent(barcode),
       {
@@ -2350,6 +2487,7 @@ async function validateConflictingCandidates(currentCode, currentMeta){
 
 async function lookupProduct(barcode, metadata){
   const startedAt = performance.now();
+  const runToken = workflowToken;
   const source = "Backbar product lookup";
   debugLog("product_lookup_started", {
     barcode:barcode,
@@ -2393,6 +2531,10 @@ async function lookupProduct(barcode, metadata){
       elapsedMs:Math.round(performance.now() - startedAt)
     });
 
+    if (runToken !== workflowToken) {
+      debugLog("product_lookup_ignored", { barcode:barcode, reason:"manual_override_or_new_workflow" });
+      return;
+    }
     if (!result.ok || !data || data.ok !== true) {
       throw new Error((data && data.error) || "Product lookup returned an invalid response");
     }
@@ -2424,11 +2566,22 @@ async function lookupProduct(barcode, metadata){
       };
       debugLog("product_lookup_completed", lastResult.lookup);
       renderNoProductMatch(barcode, data.sources, data);
+      if (data.outOfScopeProduct) {
+        updateWorkflowStatus("Verified as outside liquid-stock scope — manual override remains available", "warning");
+        debugLog("workflow_auto_fallback_skipped", { from:"internet_api_ai", to:"photo_recognition", reason:"verified_out_of_scope_product" });
+      } else {
+        scheduleAutomaticPhotoFallback("online_lookup_no_verified_match", { sourceCount:Array.isArray(data.sources) ? data.sources.length : 0 });
+      }
     }
   } catch(error) {
+    if (runToken !== workflowToken) {
+      debugLog("product_lookup_ignored", { barcode:barcode, reason:"manual_override_or_new_workflow", error:errorDetails(error) });
+      return;
+    }
     lastResult.lookup = { status:"error", error:errorDetails(error), elapsedMs:Math.round(performance.now() - startedAt) };
     debugLog("product_lookup_failed", { source:source, barcode:barcode, error:errorDetails(error), elapsedMs:Math.round(performance.now() - startedAt) });
     renderProductLookupError();
+    scheduleAutomaticPhotoFallback("online_lookup_failed", { error:errorDetails(error) });
   }
 }
 function escapeHtml(s){ return (s||"").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
