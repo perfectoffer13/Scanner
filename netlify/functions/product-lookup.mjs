@@ -948,7 +948,15 @@ export default async function productLookup(request) {
     barcode,
   );
 
-  if (!product || !product.name || !product.brand || !product.volume) {
+  const catalogFallbackNeeded =
+    !product || !product.name || !product.brand || !product.volume;
+  if (catalogFallbackNeeded && product) {
+    // An incomplete primary record can carry an unrelated stale image.
+    // Keep its text available for merging, but never carry that image forward.
+    product = { ...product, sourceImageUrl: "" };
+  }
+
+  if (catalogFallbackNeeded) {
     const upcUrl =
       "https://api.upcitemdb.com/prod/trial/lookup?upc=" +
       encodeURIComponent(barcode);
