@@ -526,6 +526,11 @@ function isLiquidStockProduct(product) {
   if (!product) return false;
   const haystack = productSearchText(product);
   if (!haystack || containsKeyword(haystack, NON_LIQUID_KEYWORDS)) return false;
+
+  const declaredScope = text(product.scope).toLowerCase();
+  if (declaredScope === "in_scope") return true;
+  if (declaredScope === "out_of_scope") return false;
+
   return containsKeyword(haystack, LIQUID_STOCK_KEYWORDS);
 }
 
@@ -595,6 +600,39 @@ function responseCitationUrls(data) {
   return urls.slice(0, 8);
 }
 
+function responseSearchQueries(data) {
+  const queries = [];
+  const seen = new Set();
+
+  function visit(value) {
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+
+    if (
+      value.type === "server_tool_use" &&
+      value.name === "web_search" &&
+      value.input &&
+      typeof value.input.query === "string"
+    ) {
+      const query = text(value.input.query, 240);
+      if (query && !seen.has(query)) {
+        seen.add(query);
+        queries.push(query);
+      }
+    }
+
+    Object.values(value).forEach((child) => {
+      if (child && typeof child === "object") visit(child);
+    });
+  }
+
+  visit(data);
+  return queries.slice(0, 4);
+}
+
 function parseAIJson(value) {
   const raw = text(value, 12000)
     .replace(/^[\u0060]{3}(?:json)?\s*/i, "")
@@ -640,6 +678,10 @@ function normalizeAIProduct(data, barcode, citationUrls) {
     }
   }
 
+  // A model claim without a web citation is not strong enough for inventory
+  // identification, especially when catalog providers disagree.
+  if (!sourceUrls.length) return null;
+
   const fields = {
     name,
     brand: firstText(data.brand),
@@ -670,7 +712,7 @@ function normalizeAIProduct(data, barcode, citationUrls) {
   };
 }
 
-async function lookupWithAI(barcode) {
+async function lookupWithAI(barcode, catalogProducts = []) {
   const enabled = String(process.env.AI_BARCODE_LOOKUP_ENABLED || "").toLowerCase() === "true";
   if (!enabled) {
     return {
@@ -679,6 +721,9 @@ async function lookupWithAI(barcode) {
       ok: false,
       product: null,
       confidence: null,
+      searchQueries: [],
+      citationUrlCount: 0,
+      evidence: "",
       error: "not_configured",
       elapsedMs: 0,
     };
@@ -692,6 +737,9 @@ async function lookupWithAI(barcode) {
       ok: false,
       product: null,
       confidence: null,
+      searchQueries: [],
+      citationUrlCount: 0,
+      evidence: "",
       error: "missing_api_key",
       elapsedMs: 0,
     };
@@ -702,6 +750,20 @@ async function lookupWithAI(barcode) {
   const startedAt = Date.now();
   const model = process.env.ANTHROPIC_BARCODE_MODEL || AI_LOOKUP_MODEL;
   const searchForms = barcodeSearchForms(barcode);
+  const candidateHints = (Array.isArray(catalogProducts) ? catalogProducts : [])
+    .filter((candidate) => candidate && (candidate.name || candidate.brand))
+    .map((candidate) => text([
+      firstText(candidate.brand),
+      firstText(candidate.name),
+      firstText(candidate.variant),
+      firstText(candidate.volume),
+    ].filter(Boolean).join(" "), 180).replace(/["\r\n]/g, ""))
+    .filter(Boolean)
+    .filter((value, index, values) => values.indexOf(value) === index)
+    .slice(0, 4);
+  const suggestedQueries = candidateHints
+    .map((hint) => '"' + barcode + '" ' + hint)
+    .slice(0, 4);
   const input = [
     "You are the exact-barcode evidence resolver for a hospitality liquid-stock inventory app.",
     "Always use web search for this request; do not answer from memory.",
@@ -709,10 +771,13 @@ async function lookupWithAI(barcode) {
     "Prioritize spirits, wine, beer, cider, cooldrinks or soft drinks, water, juices, mixers, energy drinks, syrups, and shots.",
     "Search the exact unbroken barcode first, then its valid equivalent UPC-A or GTIN-13 representation if applicable.",
     "Use the two searches efficiently: search the exact digits with beverage/product terms and search the exact digits with local retailer, distributor, manufacturer, or catalog terms.",
+    "The following are unverified catalog hints from the same exact barcode. Use their distinctive words to improve the search, but do not trust them without exact-code web evidence: " + (candidateHints.length ? candidateHints.map((hint) => "[" + hint + "]").join(" ") : "none"),
+    "Suggested exact search strings: " + (suggestedQueries.length ? suggestedQueries.join(" OR ") : '"' + barcode + '" beverage product'),
     "A retailer page, distributor listing, official promotion PDF, inventory catalog, or manufacturer page is acceptable evidence when the exact barcode and the item appear together.",
     "Do not identify an item from a similar barcode, a product name alone, or general category knowledge.",
     "For beverages, return the brand, full product name, variant or flavour, container size, ABV when applicable, beverage type, packaging, country of origin, and a concise inventory description.",
     "If the exact barcode belongs to a solid food or non-liquid item, return found:false and scope:out_of_scope.",
+    "An exact-code source that identifies the product or brand but omits size or flavour is still a valid match. Return found:true and leave only the unsupported fields empty.",
     "Do not guess missing fields. Use an empty string for unsupported fields.",
     "Return only one JSON object, with no Markdown, using this shape:",
     '{"found":true,"scope":"in_scope|out_of_scope|unknown","name":"","brand":"","type":"","variant":"","volume":"","abv":"","packaging":"","country":"","category":"","description":"","image_url":"","source_urls":[],"confidence":"high|medium|low|none","evidence":""}',
@@ -803,6 +868,7 @@ async function lookupWithAI(barcode) {
     const responseText = responseOutputText(data);
     const parsed = parseAIJson(responseText);
     const citationUrls = responseCitationUrls(responseData);
+    const searchQueries = responseSearchQueries(responseData);
     const product = response.ok
       ? normalizeAIProduct(parsed, barcode, citationUrls)
       : null;
@@ -815,8 +881,11 @@ async function lookupWithAI(barcode) {
       webSearchMaxUses: AI_WEB_SEARCH_MAX_USES,
       pauseContinuations,
       stopReason: data && data.stop_reason ? data.stop_reason : null,
+      searchQueries,
+      citationUrlCount: citationUrls.length,
       product,
       confidence: product && product.matchConfidence ? product.matchConfidence : null,
+      evidence: firstText(parsed && parsed.evidence),
       error: response.ok
         ? (parsed ? null : "invalid_ai_json")
         : text(data && data.error && data.error.message || raw, 320),
@@ -829,6 +898,9 @@ async function lookupWithAI(barcode) {
       ok: false,
       product: null,
       confidence: null,
+      searchQueries: [],
+      citationUrlCount: 0,
+      evidence: "",
       error: text(error && (error.message || error), 320),
       elapsedMs: Date.now() - startedAt,
     };
@@ -1079,6 +1151,14 @@ export default async function productLookup(request) {
       found: false,
       conflict: true,
       candidateCount: catalogCandidates.length,
+      candidates: catalogCandidates.slice(0, 4).map((candidate) => ({
+        source: firstText(candidate.source),
+        name: firstText(candidate.name),
+        brand: firstText(candidate.brand),
+        variant: firstText(candidate.variant),
+        volume: firstText(candidate.volume),
+        type: firstText(candidate.type),
+      })),
       reason: "conflicting_exact_barcode_records",
     });
     // Never return whichever provider happened to run first.
@@ -1086,7 +1166,7 @@ export default async function productLookup(request) {
   }
 
   if (catalogConflict || !hasUsableProduct(product) || !product.volume || !product.brand) {
-    const aiResult = await lookupWithAI(barcode);
+    const aiResult = await lookupWithAI(barcode, catalogCandidates);
     attempts.push({
       source: "AI web evidence",
       status: aiResult.status,
@@ -1098,6 +1178,9 @@ export default async function productLookup(request) {
       webSearchMaxUses: aiResult.webSearchMaxUses || AI_WEB_SEARCH_MAX_USES,
       pauseContinuations: aiResult.pauseContinuations || 0,
       stopReason: aiResult.stopReason || null,
+      searchQueries: aiResult.searchQueries || [],
+      citationUrlCount: aiResult.citationUrlCount || 0,
+      evidence: aiResult.evidence || null,
       elapsedMs: aiResult.elapsedMs,
       error: aiResult.error || null,
     });
