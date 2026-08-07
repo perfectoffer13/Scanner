@@ -449,6 +449,61 @@ function hasUsableProduct(product) {
   );
 }
 
+function identityTokens(product) {
+  const value = [
+    product && product.brand,
+    product && product.name,
+    product && product.variant,
+  ].map((item) => text(item).toLowerCase()).join(" ");
+  const ignored = new Set([
+    "the", "original", "taste", "soda", "soft", "drink", "pop",
+    "can", "cans", "bottle", "bottles", "pack", "case", "fl", "oz",
+  ]);
+  return new Set(
+    value
+      .replace(/[^a-z0-9]+/g, " ")
+      .split(/\s+/)
+      .filter((token) => token.length >= 3 && !ignored.has(token)),
+  );
+}
+
+function normalizedBrand(product) {
+  return text(product && product.brand)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function catalogProductsConflict(products) {
+  const candidates = (Array.isArray(products) ? products : [])
+    .filter((product) => hasUsableProduct(product));
+  for (let index = 0; index < candidates.length; index++) {
+    for (let otherIndex = index + 1; otherIndex < candidates.length; otherIndex++) {
+      const left = candidates[index];
+      const right = candidates[otherIndex];
+      const leftBrand = normalizedBrand(left);
+      const rightBrand = normalizedBrand(right);
+      if (
+        leftBrand &&
+        rightBrand &&
+        !leftBrand.includes(rightBrand) &&
+        !rightBrand.includes(leftBrand)
+      ) {
+        return true;
+      }
+
+      if (left.name && right.name) {
+        const leftTokens = identityTokens(left);
+        const rightTokens = identityTokens(right);
+        const overlap = Array.from(leftTokens).some((token) => rightTokens.has(token));
+        if (!overlap) return true;
+      }
+    }
+  }
+  return false;
+}
+
 function productSearchText(product) {
   return [
     product && product.name,
@@ -947,6 +1002,9 @@ export default async function productLookup(request) {
     openFoodFactsResult.data,
     barcode,
   );
+  const catalogCandidates = [];
+  if (product) catalogCandidates.push(product);
+  let catalogConflict = false;
 
   const catalogFallbackNeeded =
     !product || !product.name || !product.brand || !product.volume;
@@ -1007,11 +1065,27 @@ export default async function productLookup(request) {
         attempt.found = !!catalogProduct;
       }
       attempts.push(attempt);
+      if (catalogProduct) catalogCandidates.push(catalogProduct);
       product = mergeProducts(product, catalogProduct, barcode);
     }
   }
 
-  if (!hasUsableProduct(product) || !product.volume || !product.brand) {
+  catalogConflict = catalogProductsConflict(catalogCandidates);
+  if (catalogConflict) {
+    attempts.push({
+      source: "Catalog consistency",
+      status: 409,
+      ok: false,
+      found: false,
+      conflict: true,
+      candidateCount: catalogCandidates.length,
+      reason: "conflicting_exact_barcode_records",
+    });
+    // Never return whichever provider happened to run first.
+    product = null;
+  }
+
+  if (catalogConflict || !hasUsableProduct(product) || !product.volume || !product.brand) {
     const aiResult = await lookupWithAI(barcode);
     attempts.push({
       source: "AI web evidence",
@@ -1027,7 +1101,9 @@ export default async function productLookup(request) {
       elapsedMs: aiResult.elapsedMs,
       error: aiResult.error || null,
     });
-    product = mergeProducts(product, aiResult.product, barcode);
+    product = catalogConflict
+      ? aiResult.product
+      : mergeProducts(product, aiResult.product, barcode);
   }
 
   if (!hasUsableProduct(product)) {
