@@ -1,5 +1,5 @@
 const ALLOWED_ORIGIN = "https://backbar-product-scanner.netlify.app";
-const USER_AGENT = "BackbarProductScanner/0.5 (+https://backbar-product-scanner.netlify.app)";
+const USER_AGENT = "BackbarProductScanner/0.6 (+https://backbar-product-scanner.netlify.app)";
 const REQUEST_TIMEOUT_MS = 8000;
 const MAX_TEXT = 6000;
 const AI_LOOKUP_TIMEOUT_MS = 25000;
@@ -244,6 +244,126 @@ function normalizeUPCItem(data, barcode) {
     source: "UPCitemdb",
     sourceRecordUrl: "https://www.upcitemdb.com/upc/" + encodeURIComponent(barcode),
     sourceImageUrl: findImage(item.images),
+  };
+}
+
+
+function normalizeBarcodeCatalogProduct(data, barcode, source, fallbackUrl) {
+  const root = data && typeof data === "object" ? data : null;
+  const payload = root && root.data && typeof root.data === "object"
+    ? root.data
+    : root;
+  const item = payload && payload.product && typeof payload.product === "object"
+    ? payload.product
+    : payload && payload.item && typeof payload.item === "object"
+      ? payload.item
+      : payload;
+
+  if (!item || typeof item !== "object") return null;
+
+  const name = firstText(
+    item.name,
+    item.product_name,
+    item.productName,
+    item.title,
+    item.display_name,
+    item.displayName,
+  );
+  const brand = firstText(
+    item.brand,
+    item.brand_name,
+    item.brandName,
+    item.manufacturer,
+    item.manufacturer_name,
+  );
+  const category = firstText(
+    item.category,
+    item.category_name,
+    item.categoryName,
+    item.product_type,
+    item.productType,
+    item.department,
+  );
+  const description = firstText(
+    item.description,
+    item.product_description,
+    item.productDescription,
+    item.about,
+  );
+  const volume = firstText(
+    item.volume,
+    item.size,
+    item.quantity,
+    item.net_content,
+    item.netContent,
+    extractVolume(name, description),
+  );
+  const variant = firstText(
+    item.variant,
+    item.flavor,
+    item.flavour,
+    item.flavor_name,
+    item.flavour_name,
+  );
+  const type = firstText(
+    item.type,
+    item.product_type,
+    item.productType,
+    inferType(category, name, description),
+  );
+  const abv = normalizeAbv(
+    item.abv,
+    item.alcohol,
+    item.alcohol_content,
+    item.alcohol_percentage,
+    name,
+    description,
+  );
+
+  if (!name && !brand) return null;
+
+  const fields = { name, brand, variant, volume, abv };
+
+  return {
+    barcode,
+    name,
+    brand,
+    type,
+    variant,
+    volume,
+    abv,
+    packaging: firstText(item.packaging, item.package_type, item.packageType),
+    country: firstText(item.country, item.origin, item.country_of_origin),
+    category,
+    description: firstText(description, productDescription(item, fields)),
+    source,
+    sourceRecordUrl: firstText(
+      item.url,
+      item.product_url,
+      item.productUrl,
+      item.link,
+      fallbackUrl,
+    ),
+    sourceImageUrl: findImage(
+      item.image_url,
+      item.imageUrl,
+      item.image,
+      item.images,
+      item.thumbnail,
+      item.thumbnail_url,
+      item.photo,
+      item.photos,
+    ),
+    matchConfidence: firstText(
+      item.confidence,
+      item.confidence_score,
+      item.data_quality_score,
+    ),
+    evidence: firstText(
+      item.source_count ? String(item.source_count) + " catalog sources" : "",
+      item.evidence,
+    ),
+    scope: "",
   };
 }
 
@@ -645,16 +765,24 @@ async function fetchJson(url, source) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   const startedAt = Date.now();
+  const headers = {
+    accept: "application/json",
+    "user-agent": USER_AGENT,
+  };
+
+  if (source === "upc.dev" && text(process.env.UPC_DEV_API_KEY, 300)) {
+    headers["x-api-key"] = text(process.env.UPC_DEV_API_KEY, 300);
+  }
+  if (source === "GTINHub" && text(process.env.GTINHUB_API_KEY, 300)) {
+    headers["x-api-key"] = text(process.env.GTINHUB_API_KEY, 300);
+  }
 
   try {
     const response = await fetch(url, {
       method: "GET",
       redirect: "follow",
       signal: controller.signal,
-      headers: {
-        accept: "application/json",
-        "user-agent": USER_AGENT,
-      },
+      headers,
     });
     const raw = await response.text();
     let data = null;
@@ -794,6 +922,66 @@ export default async function productLookup(request) {
     );
   }
 
+  if (!product || !product.name || !product.brand || !product.volume) {
+    const upcDevUrl =
+      "https://upc.dev/v1/product/" + encodeURIComponent(barcode);
+    const upcDevResult = await fetchJson(upcDevUrl, "upc.dev");
+    attempts.push({
+      source: upcDevResult.source,
+      status: upcDevResult.status,
+      ok: upcDevResult.ok,
+      found: !!normalizeBarcodeCatalogProduct(
+        upcDevResult.data,
+        barcode,
+        "upc.dev",
+        "https://upc.dev/product/" + encodeURIComponent(barcode),
+      ),
+      elapsedMs: upcDevResult.elapsedMs,
+      error: upcDevResult.error || null,
+    });
+    product = mergeProducts(
+      product,
+      normalizeBarcodeCatalogProduct(
+        upcDevResult.data,
+        barcode,
+        "upc.dev",
+        "https://upc.dev/product/" + encodeURIComponent(barcode),
+      ),
+      barcode,
+    );
+  }
+
+  const gtinHubEnabled =
+    String(process.env.GTINHUB_LOOKUP_ENABLED || "true").toLowerCase() !== "false";
+  if (gtinHubEnabled && (!product || !product.name || !product.brand || !product.volume)) {
+    const gtinHubUrl =
+      "https://gtinhub.com/api/v1/product/" + encodeURIComponent(barcode);
+    const gtinHubResult = await fetchJson(gtinHubUrl, "GTINHub");
+    attempts.push({
+      source: gtinHubResult.source,
+      status: gtinHubResult.status,
+      ok: gtinHubResult.ok,
+      found: !!normalizeBarcodeCatalogProduct(
+        gtinHubResult.data,
+        barcode,
+        "GTINHub",
+        "https://gtinhub.com/api/v1/product/" + encodeURIComponent(barcode),
+      ),
+      elapsedMs: gtinHubResult.elapsedMs,
+      error: gtinHubResult.error || null,
+    });
+    product = mergeProducts(
+      product,
+      normalizeBarcodeCatalogProduct(
+        gtinHubResult.data,
+        barcode,
+        "GTINHub",
+        "https://gtinhub.com/api/v1/product/" + encodeURIComponent(barcode),
+      ),
+      barcode,
+    );
+  }
+
   if (!hasUsableProduct(product) || !product.volume || !product.brand) {
     const aiResult = await lookupWithAI(barcode);
     attempts.push({
@@ -805,6 +993,8 @@ export default async function productLookup(request) {
       confidence: aiResult.confidence || null,
       model: aiResult.model || null,
       webSearchMaxUses: aiResult.webSearchMaxUses || AI_WEB_SEARCH_MAX_USES,
+      pauseContinuations: aiResult.pauseContinuations || 0,
+      stopReason: aiResult.stopReason || null,
       elapsedMs: aiResult.elapsedMs,
       error: aiResult.error || null,
     });
