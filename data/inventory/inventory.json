@@ -3,6 +3,33 @@
   "app": "backbar-product-identification",
   "repository": "perfectoffer13/Scanner",
   "branch": "main",
-  "updatedAt": "2026-08-08T11:30:00.000Z",
-  "items": []
+  "updatedAt": "2026-08-08T11:31:28.264Z",
+  "items": [
+    {
+      "id": "inv-1786098733332-01bdcf2e28b8b8",
+      "barcode": "5449000057839",
+      "name": "Coca-Cola Zero Sugar",
+      "brand": "Coca-Cola",
+      "volume": "600 ml",
+      "variant": "",
+      "type": "Soft drink / Cooldrink",
+      "abv": "0%",
+      "category": "Carbonated Soft Drink",
+      "description": "Zero-sugar, zero-calorie cola-flavored carbonated soft drink with classic Coca-Cola taste",
+      "packaging": "",
+      "country": "",
+      "source": "Manual entry",
+      "matchConfidence": "User-confirmed",
+      "scope": "in_scope",
+      "photoVerified": true,
+      "sourcePhotoCaptured": false,
+      "createdAt": "2026-08-07T10:32:13.332Z",
+      "updatedAt": "2026-08-07T12:11:23.090Z",
+      "github": {
+        "imagePath": "data/inventory/images/inv-1786098733332-01bdcf2e28b8b8.jpg",
+        "imageUrl": "https://raw.githubusercontent.com/perfectoffer13/Scanner/main/data/inventory/images/inv-1786098733332-01bdcf2e28b8b8.jpg",
+        "publishedAt": "2026-08-08T11:31:28.264Z"
+      }
+    }
+  ]
 }
