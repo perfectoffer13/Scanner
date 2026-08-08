@@ -1,7 +1,7 @@
 (function(){
 "use strict";
 
-const APP_VERSION = "0.8.1";
+const APP_VERSION = "0.8.2";
 const appVersionEl = document.getElementById("app-version");
 if (appVersionEl) appVersionEl.textContent = "Version " + APP_VERSION;
 document.title = "Barcode Scanner Test · v" + APP_VERSION;
@@ -3268,4 +3268,3 @@ async function lookupProduct(barcode, metadata){
 }
 function escapeHtml(s){ return (s||"").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 })();
-
