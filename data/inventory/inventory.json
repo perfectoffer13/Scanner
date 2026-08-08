@@ -3,7 +3,7 @@
   "app": "backbar-product-identification",
   "repository": "perfectoffer13/Scanner",
   "branch": "main",
-  "updatedAt": "2026-08-08T11:31:36.146Z",
+  "updatedAt": "2026-08-08T11:31:39.485Z",
   "items": [
     {
       "id": "inv-1786098733332-01bdcf2e28b8b8",
@@ -55,6 +55,32 @@
         "imagePath": "data/inventory/images/inv-1786104713678-f0de60b04341.jpg",
         "imageUrl": "https://raw.githubusercontent.com/perfectoffer13/Scanner/main/data/inventory/images/inv-1786104713678-f0de60b04341.jpg",
         "publishedAt": "2026-08-08T11:31:31.509Z"
+      }
+    },
+    {
+      "id": "inv-1786104828673-829e8b7077414",
+      "barcode": "5060337501804",
+      "name": "Monster Energy Ultra",
+      "brand": "Monster",
+      "volume": "500ml",
+      "variant": "Ultra",
+      "type": "",
+      "abv": "",
+      "category": "Energy Drinks",
+      "description": "High caffeine content energy drink, zero sugar variant",
+      "packaging": "",
+      "country": "",
+      "source": "Manual entry",
+      "matchConfidence": "User-confirmed",
+      "scope": "in_scope",
+      "photoVerified": true,
+      "sourcePhotoCaptured": false,
+      "createdAt": "2026-08-07T12:13:48.673Z",
+      "updatedAt": "2026-08-07T12:13:48.673Z",
+      "github": {
+        "imagePath": "data/inventory/images/inv-1786104828673-829e8b7077414.jpg",
+        "imageUrl": "https://raw.githubusercontent.com/perfectoffer13/Scanner/main/data/inventory/images/inv-1786104828673-829e8b7077414.jpg",
+        "publishedAt": "2026-08-08T11:31:39.485Z"
       }
     },
     {
