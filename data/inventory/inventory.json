@@ -3,7 +3,7 @@
   "app": "backbar-product-identification",
   "repository": "perfectoffer13/Scanner",
   "branch": "main",
-  "updatedAt": "2026-08-08T11:31:33.626Z",
+  "updatedAt": "2026-08-08T11:31:36.146Z",
   "items": [
     {
       "id": "inv-1786098733332-01bdcf2e28b8b8",
@@ -81,6 +81,32 @@
         "imagePath": "",
         "imageUrl": "",
         "publishedAt": "2026-08-08T11:31:33.626Z"
+      }
+    },
+    {
+      "id": "inv-1786104792001-217a882b4f56a8",
+      "barcode": "40822747",
+      "name": "Schweppes",
+      "brand": "Coca-Cola",
+      "volume": "50 cl",
+      "variant": "",
+      "type": "Soft drink / Cooldrink",
+      "abv": "",
+      "category": "Sodas, Carbonated soft drinks without fruit juice with reduced sugar, Sweetened beverages",
+      "description": "Coca-Cola, Schweppes, 50 cl",
+      "packaging": "",
+      "country": "",
+      "source": "Manual entry",
+      "matchConfidence": "User-confirmed",
+      "scope": "in_scope",
+      "photoVerified": true,
+      "sourcePhotoCaptured": false,
+      "createdAt": "2026-08-07T12:13:12.001Z",
+      "updatedAt": "2026-08-07T12:13:12.001Z",
+      "github": {
+        "imagePath": "data/inventory/images/inv-1786104792001-217a882b4f56a8.jpg",
+        "imageUrl": "https://raw.githubusercontent.com/perfectoffer13/Scanner/main/data/inventory/images/inv-1786104792001-217a882b4f56a8.jpg",
+        "publishedAt": "2026-08-08T11:31:36.146Z"
       }
     }
   ]
