@@ -3,7 +3,7 @@
   "app": "backbar-product-identification",
   "repository": "perfectoffer13/Scanner",
   "branch": "main",
-  "updatedAt": "2026-08-08T11:31:46.622Z",
+  "updatedAt": "2026-08-08T11:31:49.900Z",
   "items": [
     {
       "id": "inv-1786098733332-01bdcf2e28b8b8",
@@ -159,6 +159,32 @@
         "imagePath": "",
         "imageUrl": "",
         "publishedAt": "2026-08-08T11:31:33.626Z"
+      }
+    },
+    {
+      "id": "inv-1786115848706-8269086e75dc",
+      "barcode": "6001108050465",
+      "name": "Savanna Light Premium Cider",
+      "brand": "Savanna",
+      "volume": "330ml",
+      "variant": "Light",
+      "type": "Cider",
+      "abv": "3%",
+      "category": "Apple cider",
+      "description": "A crisp, golden apple cider with lower alcohol content compared to Savanna Dry",
+      "packaging": "",
+      "country": "",
+      "source": "Manual entry",
+      "matchConfidence": "User-confirmed",
+      "scope": "in_scope",
+      "photoVerified": true,
+      "sourcePhotoCaptured": false,
+      "createdAt": "2026-08-07T15:17:28.706Z",
+      "updatedAt": "2026-08-07T15:17:28.706Z",
+      "github": {
+        "imagePath": "data/inventory/images/inv-1786115848706-8269086e75dc.jpg",
+        "imageUrl": "https://raw.githubusercontent.com/perfectoffer13/Scanner/main/data/inventory/images/inv-1786115848706-8269086e75dc.jpg",
+        "publishedAt": "2026-08-08T11:31:49.900Z"
       }
     },
     {
