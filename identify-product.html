@@ -124,6 +124,11 @@ p.sub{color:var(--muted);font-size:13.5px;margin:0 0 26px;}
 .inventory-item-meta{color:var(--muted);font-size:12px;line-height:1.35;margin-top:4px;overflow-wrap:anywhere;}
 .inventory-item-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;}
 .inventory-item-actions .diag-btn{padding:7px 9px;}
+.inventory-publish-toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 14px;}
+.inventory-publish-status{color:var(--muted);font-size:11px;line-height:1.35;flex:1;min-width:140px;}
+.inventory-publish-status.success{color:#9bd1a8;}
+.inventory-publish-status.warning{color:#e6a08d;}
+.github-badge{display:inline-block;margin:7px 5px 0 0;padding:4px 7px;border-radius:5px;background:#e8eef8;color:#8eb5e9;font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;}
 .manual-field{margin-top:11px;}
 .manual-field label{display:block;color:var(--muted);font-size:11px;letter-spacing:.06em;text-transform:uppercase;margin-bottom:5px;}
 .manual-field input,.manual-field select,.manual-field textarea{width:100%;padding:11px 12px;border:1px solid var(--line);border-radius:8px;background:#141210;color:var(--text);font:inherit;font-size:14px;}
@@ -209,6 +214,7 @@ p.sub{color:var(--muted);font-size:13.5px;margin:0 0 26px;}
       <button class="btn photo-action" id="btn-photo-result">Take photo / AI</button>
       <button class="btn secondary" id="btn-manual-result">Manual entry</button>
       <button class="btn save-action" id="btn-save-result" disabled>Save to inventory</button>
+       <button class="btn secondary" id="btn-publish-result" style="display:none" disabled>Publish item</button>
       <button class="btn secondary" id="btn-report">Report problem</button>
       <button class="btn" id="btn-copy-result-log">Copy log</button>
       <button class="btn" id="btn-done">Done</button>
@@ -223,7 +229,11 @@ p.sub{color:var(--muted);font-size:13.5px;margin:0 0 26px;}
       <h2>Mini inventory <span id="inventory-title-count">0 / 10</span></h2>
       <button class="overlay-close" id="btn-close-inventory" aria-label="Close inventory">&times;</button>
     </div>
-    <p class="inventory-subtitle">Saved locally on this phone for the prototype. Each product can be edited, photographed, and removed.</p>
+    <p class="inventory-subtitle">Saved locally on this phone for the prototype. Publish an item or the complete inventory to the Scanner GitHub repository when you want it available for review.</p>
+     <div class="inventory-publish-toolbar">
+       <button class="diag-btn" id="btn-publish-inventory">Publish inventory</button>
+       <span class="inventory-publish-status" id="inventory-publish-status" aria-live="polite">Not published yet.</span>
+     </div>
     <div class="inventory-list" id="inventory-list"></div>
     <div class="manual-actions">
       <button class="btn" id="btn-inventory-add">Add manual item</button>
@@ -292,7 +302,7 @@ p.sub{color:var(--muted);font-size:13.5px;margin:0 0 26px;}
 (function(){
 "use strict";
 
-const APP_VERSION = "0.6.0";
+const APP_VERSION = "0.6.1";
 const appVersionEl = document.getElementById("app-version");
 if (appVersionEl) appVersionEl.textContent = "Version " + APP_VERSION;
 document.title = "Barcode Scanner Test · v" + APP_VERSION;
@@ -982,6 +992,7 @@ let lastResult = null;
 const INVENTORY_STORAGE_KEY = "backbar_mini_inventory_v1";
 const INVENTORY_MAX_ITEMS = 10;
 const PHOTO_LOOKUP_ENDPOINT = "/.netlify/functions/photo-lookup";
+const PUBLISH_INVENTORY_ENDPOINT = "/.netlify/functions/publish-inventory";
 const MAX_IMAGE_EDGE = 1400;
 const STUDIO_IMAGE_WIDTH = 1000;
 const STUDIO_IMAGE_HEIGHT = 1000;
@@ -997,6 +1008,7 @@ let workflowToken = 0;
 let automaticFallbackTimer = null;
 let automaticPhotoPromptTimer = null;
 let studioImageProcessingMode = "canvas_fallback";
+let publishInFlight = false;
 
 const inventoryCard = document.getElementById("inventory-card");
 const inventoryList = document.getElementById("inventory-list");
@@ -1007,6 +1019,7 @@ const manualPhotoPreview = document.getElementById("manual-photo-preview");
 const manualMessage = document.getElementById("manual-message");
 const photoInput = document.getElementById("photo-input");
 const manualPhotoInput = document.getElementById("manual-photo-input");
+const inventoryPublishStatus = document.getElementById("inventory-publish-status");
 
 function readInventory(){
   try {
@@ -1048,6 +1061,159 @@ function findInventoryByBarcode(barcode){
 }
 function inventoryDescription(data){
   return [data.brand,data.name,data.variant,data.volume,data.abv].filter(Boolean).join(", ");
+}
+
+function setInventoryPublishStatus(message, state){
+  if (!inventoryPublishStatus) return;
+  inventoryPublishStatus.textContent = message || "";
+  inventoryPublishStatus.className = "inventory-publish-status" + (state ? " " + state : "");
+}
+function publishedInventoryItem(item, data){
+  return Object.assign({}, item, {
+    githubPublished:true,
+    githubPublishedAt:data.publishedAt || new Date().toISOString(),
+    githubRepository:data.repository || "perfectoffer13/Scanner",
+    githubBranch:data.branch || "main",
+    githubInventoryPath:data.inventoryPath || "",
+    githubImagePath:data.imagePath || "",
+    githubImageUrl:data.imageUrl || "",
+    githubCommitSha:data.commitSha || ""
+  });
+}
+async function publishOneInventoryItem(item){
+  const publishable = Object.assign({}, item, {
+    sourceImageUrl:"",
+    studioImageDataUrl:item.studioImageDataUrl || ""
+  });
+  const response = await fetch(PUBLISH_INVENTORY_ENDPOINT, {
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
+    credentials:"same-origin",
+    body:JSON.stringify({ item:publishable })
+  });
+  const raw = await response.text();
+  let data = null;
+  try { data = raw ? JSON.parse(raw) : null; } catch(error) {}
+  if (!response.ok || !data || data.ok !== true) {
+    throw new Error((data && data.error) || "GitHub publish failed (HTTP " + response.status + ")");
+  }
+  return data;
+}
+async function publishItemToGithub(item, options){
+  if (!item || !item.name) {
+    setInventoryPublishStatus("Add a product name before publishing.", "warning");
+    return null;
+  }
+  if (publishInFlight) return null;
+  publishInFlight = true;
+  const context = options && options.context === "result" ? "result" : "inventory";
+  setInventoryPublishStatus("Publishing " + (item.name || "item") + " to GitHub…", "");
+  debugLog("inventory_publish_started", {
+    mode:"item",
+    context:context,
+    id:item.id || null,
+    barcode:item.barcode || null,
+    name:truncate(item.name,160),
+    hasStudioImage:!!item.studioImageDataUrl
+  });
+  try {
+    const data = await publishOneInventoryItem(item);
+    const updated = publishedInventoryItem(item, data);
+    inventoryItems = inventoryItems.map(entry => entry.id === updated.id ? updated : entry);
+    if (!writeInventory()) throw new Error("GitHub published, but the local inventory could not be updated.");
+    renderInventoryList();
+    setInventoryPublishStatus("Published " + (updated.name || "item") + " to GitHub.", "success");
+    debugLog("inventory_publish_completed", {
+      mode:"item",
+      id:updated.id,
+      barcode:updated.barcode || null,
+      name:truncate(updated.name,160),
+      repository:data.repository || null,
+      inventoryPath:data.inventoryPath || null,
+      imagePath:data.imagePath || null,
+      commitSha:data.commitSha || null
+    });
+    if (lastResult && lastResult.product && lastResult.product.id === updated.id) {
+      lastResult.product = updated;
+      setResultButtonState({
+        canSave:false,
+        photo:false,
+        manual:true,
+        publish:true,
+        canPublish:false,
+        publishLabel:"Published to GitHub",
+        saveLabel:"Saved to inventory"
+      });
+    }
+    return updated;
+  } catch(error) {
+    setInventoryPublishStatus("GitHub publish failed: " + truncate(error.message || error, 180), "warning");
+    debugLog("inventory_publish_failed", {
+      mode:"item",
+      id:item.id || null,
+      barcode:item.barcode || null,
+      name:truncate(item.name,160),
+      error:errorDetails(error)
+    });
+    return null;
+  } finally {
+    publishInFlight = false;
+  }
+}
+async function publishInventoryToGithub(){
+  if (publishInFlight) return;
+  if (!inventoryItems.length) {
+    setInventoryPublishStatus("There are no saved inventory items to publish.", "warning");
+    return;
+  }
+  publishInFlight = true;
+  const snapshot = inventoryItems.slice();
+  let publishedCount = 0;
+  setInventoryPublishStatus("Publishing 0 / " + snapshot.length + " inventory items…", "");
+  debugLog("inventory_publish_started", { mode:"inventory", count:snapshot.length });
+  try {
+    for (const item of snapshot) {
+      setInventoryPublishStatus("Publishing " + (publishedCount + 1) + " / " + snapshot.length + "…", "");
+      const data = await publishOneInventoryItem(item);
+      const updated = publishedInventoryItem(item, data);
+      inventoryItems = inventoryItems.map(entry => entry.id === updated.id ? updated : entry);
+      if (!writeInventory()) throw new Error("GitHub published, but the local inventory could not be updated.");
+      publishedCount++;
+      renderInventoryList();
+    }
+    setInventoryPublishStatus(
+      "Published " + publishedCount + " inventory item" + (publishedCount === 1 ? "" : "s") + " to GitHub.",
+      "success"
+    );
+    debugLog("inventory_publish_completed", { mode:"inventory", count:publishedCount });
+  } catch(error) {
+    setInventoryPublishStatus(
+      "Published " + publishedCount + " item" + (publishedCount === 1 ? "" : "s") +
+      "; stopped because: " + truncate(error.message || error, 160),
+      "warning"
+    );
+    debugLog("inventory_publish_failed", {
+      mode:"inventory",
+      publishedCount:publishedCount,
+      requestedCount:snapshot.length,
+      error:errorDetails(error)
+    });
+  } finally {
+    publishInFlight = false;
+  }
+}
+async function publishCurrentResultToGithub(){
+  const product = lastResult && lastResult.product ? lastResult.product : null;
+  const item = product && product.id
+    ? inventoryItems.find(entry => entry.id === product.id)
+    : product && product.barcode
+      ? findInventoryByBarcode(product.barcode)
+      : null;
+  if (!item) {
+    setInventoryPublishStatus("Save the item to this phone first, then publish it.", "warning");
+    return;
+  }
+  await publishItemToGithub(item, { context:"result" });
 }
 function renderInventoryList(){
   if (!inventoryList) return;
@@ -1095,6 +1261,21 @@ function renderInventoryList(){
     badge.className = "studio-badge";
     badge.textContent = item.studioImageDataUrl ? "Studio image saved" : "White studio display";
     details.appendChild(badge);
+    if (item.githubPublished) {
+      const githubBadge = document.createElement("span");
+      githubBadge.className = "github-badge";
+      githubBadge.textContent = "GitHub published";
+      details.appendChild(githubBadge);
+    }
+    if (item.githubImageUrl && /^https:\/\//i.test(item.githubImageUrl)) {
+      const githubLink = document.createElement("a");
+      githubLink.className = "lookup-link";
+      githubLink.href = item.githubImageUrl;
+      githubLink.target = "_blank";
+      githubLink.rel = "noopener noreferrer";
+      githubLink.textContent = "Open published image";
+      details.appendChild(githubLink);
+    }
     const actions = document.createElement("div");
     actions.className = "inventory-item-actions";
     const edit = document.createElement("button");
@@ -1105,11 +1286,15 @@ function renderInventoryList(){
     photo.className = "diag-btn";
     photo.textContent = "Update photo";
     photo.onclick = () => openManualEntry(item);
+    const publish = document.createElement("button");
+    publish.className = "diag-btn";
+    publish.textContent = item.githubPublished ? "Republish item" : "Publish item";
+    publish.onclick = () => { void publishItemToGithub(item); };
     const remove = document.createElement("button");
     remove.className = "diag-btn";
     remove.textContent = "Remove";
     remove.onclick = () => removeInventoryItem(item.id);
-    actions.append(edit, photo, remove);
+    actions.append(edit, photo, publish, remove);
     details.appendChild(actions);
     card.append(thumb, details);
     inventoryList.appendChild(card);
@@ -1216,6 +1401,14 @@ function saveManualEntry(){
     scope:"in_scope",
     studioImageDataUrl:manualStudioImageDataUrl || (existing && existing.studioImageDataUrl) || "",
     sourceImageUrl:manualSourceImageUrl || (existing && existing.sourceImageUrl) || "",
+     githubPublished:false,
+     githubPublishedAt:"",
+     githubRepository:"",
+     githubBranch:"",
+     githubInventoryPath:"",
+     githubImagePath:"",
+     githubImageUrl:"",
+     githubCommitSha:"",
     createdAt:existing && existing.createdAt ? existing.createdAt : now,
     updatedAt:now
   });
@@ -1521,6 +1714,14 @@ function saveProductToInventory(product, sourceImageUrl){
     sourceImageUrl:sourceImageUrl || product.sourceImageUrl || (existing && existing.sourceImageUrl) || "",
     sourcePhotoCaptured:!!(sourceImageUrl || product.sourceImageUrl || (existing && existing.sourceImageUrl)),
     photoVerified:product.photoVerified !== false,
+     githubPublished:false,
+     githubPublishedAt:"",
+     githubRepository:"",
+     githubBranch:"",
+     githubInventoryPath:"",
+     githubImagePath:"",
+     githubImageUrl:"",
+     githubCommitSha:"",
     createdAt:existing && existing.createdAt ? existing.createdAt : now,
     updatedAt:now
   });
@@ -1590,7 +1791,7 @@ function scheduleAutomaticInventorySave(product, sourceImageUrl){
     }
     if (lastResult) lastResult.product = saved;
     updateWorkflowStatus("Step 5 of 5 · Saved to inventory automatically", "success");
-    setResultButtonState({ canSave:false, photo:false, manual:true, saveLabel:"Saved to inventory" });
+    setResultButtonState({ canSave:false, photo:false, manual:true, publish:true, canPublish:true, publishLabel:"Publish item", saveLabel:"Saved to inventory" });
     const body = document.getElementById("r-body");
     if (body && !body.querySelector(".auto-save-note")) {
       const note = document.createElement("div");
@@ -1642,6 +1843,7 @@ function setResultButtonState(options){
   const photo = document.getElementById("btn-photo-result");
   const manual = document.getElementById("btn-manual-result");
   const save = document.getElementById("btn-save-result");
+const publish = document.getElementById("btn-publish-result");
   if (photo) {
     photo.style.display = opts.photo === false ? "none" : "";
     photo.textContent = opts.photoLabel || "Take photo / AI";
@@ -1651,6 +1853,11 @@ function setResultButtonState(options){
     save.style.display = "";
     save.disabled = !opts.canSave;
     save.textContent = opts.saveLabel || "Save to inventory";
+   if (publish) {
+     publish.style.display = opts.publish === true ? "" : "none";
+     publish.disabled = opts.canPublish !== true;
+     publish.textContent = opts.publishLabel || "Publish item";
+   }
   }
 }
 function saveCurrentResultToInventory(){
@@ -1901,8 +2108,10 @@ document.getElementById("btn-manual-result").onclick = () => openManualEntry(
     : { barcode:lastResult && lastResult.barcode ? lastResult.barcode : "" }
 );
 document.getElementById("btn-save-result").onclick = saveCurrentResultToInventory;
+ document.getElementById("btn-publish-result").onclick = () => { void publishCurrentResultToGithub(); };
 document.getElementById("btn-inventory").onclick = openInventory;
 document.getElementById("btn-inventory-add").onclick = () => openManualEntry(null);
+ document.getElementById("btn-publish-inventory").onclick = () => { void publishInventoryToGithub(); };
 document.getElementById("btn-close-inventory").onclick = closeInventory;
 document.getElementById("btn-close-manual").onclick = closeManualEntry;
 document.getElementById("btn-cancel-manual").onclick = closeManualEntry;
@@ -2581,6 +2790,9 @@ function renderProductMatch(product, options){
     canSave:!waitingForPhoto && !waitingForSave && !conflict && !alreadySaved,
     photo:!alreadySaved,
     manual:true,
+    publish:alreadySaved,
+    canPublish:alreadySaved,
+    publishLabel:"Publish item",
     saveLabel:waitingForPhoto
       ? "Photo required before save"
       : conflict
