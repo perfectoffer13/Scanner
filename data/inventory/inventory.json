@@ -3,7 +3,7 @@
   "app": "backbar-product-identification",
   "repository": "perfectoffer13/Scanner",
   "branch": "main",
-  "updatedAt": "2026-08-08T11:31:49.900Z",
+  "updatedAt": "2026-08-08T11:31:52.723Z",
   "items": [
     {
       "id": "inv-1786098733332-01bdcf2e28b8b8",
@@ -55,6 +55,32 @@
         "imagePath": "data/inventory/images/inv-1786104713678-f0de60b04341.jpg",
         "imageUrl": "https://raw.githubusercontent.com/perfectoffer13/Scanner/main/data/inventory/images/inv-1786104713678-f0de60b04341.jpg",
         "publishedAt": "2026-08-08T11:31:31.509Z"
+      }
+    },
+    {
+      "id": "inv-1786177228610-15b64741fdff68",
+      "barcode": "5449000002938",
+      "name": "Fanta Orange",
+      "brand": "Fanta",
+      "volume": "500ml",
+      "variant": "Orange",
+      "type": "Soft Drink",
+      "abv": "",
+      "category": "Carbonated Soft Drink",
+      "description": "Orange flavoured carbonated soft drink",
+      "packaging": "Plastic Bottle",
+      "country": "",
+      "source": "AI photo recognition",
+      "matchConfidence": "Barcode + photo confirmed",
+      "scope": "in_scope",
+      "photoVerified": true,
+      "sourcePhotoCaptured": true,
+      "createdAt": "2026-08-08T08:20:28.610Z",
+      "updatedAt": "2026-08-08T08:20:28.610Z",
+      "github": {
+        "imagePath": "data/inventory/images/inv-1786177228610-15b64741fdff68.jpg",
+        "imageUrl": "https://raw.githubusercontent.com/perfectoffer13/Scanner/main/data/inventory/images/inv-1786177228610-15b64741fdff68.jpg",
+        "publishedAt": "2026-08-08T11:31:52.723Z"
       }
     },
     {
