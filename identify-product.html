@@ -991,6 +991,7 @@ const STUDIO_IMAGE_HEIGHT = 1000;
 // Netlify synchronous functions have a hard 60-second limit; stop early enough
 // to return a useful retry message instead of waiting for the platform to cut us off.
 const STUDIO_IMAGE_TIMEOUT_MS = 58000;
+const AI_STUDIO_MODE_PATTERN = /^ai-studio-generated-(?:gpt-image-1\.5|gpt-image-1|gpt-image-1-mini|chatgpt-image-latest)$/;
 let inventoryItems = [];
 let manualEditingId = null;
 let manualStudioImageDataUrl = "";
@@ -1020,6 +1021,9 @@ const inventoryPublishStatus = document.getElementById("inventory-publish-status
 function normalizeGtin(value){
   const digits = String(value || "").replace(/[^0-9]/g, "");
   return /^\d{8,14}$/.test(digits) ? digits : "";
+}
+function isAiStudioGenerated(item){
+  return !!item && AI_STUDIO_MODE_PATTERN.test(String(item.studioImageProcessing || ""));
 }
 function stableInventoryId(item, barcode){
   if (barcode) return "gtin-" + barcode;
@@ -1059,7 +1063,7 @@ function inventoryValidation(item){
   if (!item || item.imageStatus !== "studio_verified" || item.assetVersion !== STUDIO_ASSET_VERSION || item.studioImageVerified !== true) {
     reasons.push("A verified studio image is required.");
   }
-  if (!item || !/^ai-studio-generated-(?:gpt-image-1\.5|gpt-image-1|gpt-image-1-mini|chatgpt-image-latest)$/.test(String(item.studioImageProcessing || ""))) {
+  if (!isAiStudioGenerated(item)) {
     reasons.push("An AI-generated studio image is required.");
   }
   if (!item || !/^data:image\/(?:jpeg|jpg|png|webp);base64,/i.test(String(item.studioImageDataUrl || ""))) {
@@ -1072,7 +1076,7 @@ function normalizeInventoryItem(input){
   const barcode = normalizeGtin(item.gtin || item.barcode);
   const legacyStudioImage = !!(
     item.studioImageDataUrl &&
-    (item.studioImageVerified !== true || item.assetVersion !== STUDIO_ASSET_VERSION)
+    (item.studioImageVerified !== true || item.assetVersion !== STUDIO_ASSET_VERSION || !isAiStudioGenerated(item))
   );
   const sourceImageUrl = item.sourceImageUrl || (legacyStudioImage ? item.studioImageDataUrl : "");
   const studioImageDataUrl = legacyStudioImage ? "" : String(item.studioImageDataUrl || "");
@@ -1356,6 +1360,7 @@ function renderInventoryList(){
     const hasVerifiedStudio = item.imageStatus === "studio_verified" &&
       item.assetVersion === STUDIO_ASSET_VERSION &&
       item.studioImageVerified === true &&
+      isAiStudioGenerated(item) &&
       !!item.studioImageDataUrl;
     const src = hasVerifiedStudio ? item.studioImageDataUrl : "";
     if (src) {
@@ -1497,7 +1502,8 @@ function openManualEntry(product, options){
   setManualField("manual-type",source.type);
   manualStudioImageDataUrl = source.imageStatus === "studio_verified" &&
     source.assetVersion === STUDIO_ASSET_VERSION &&
-    source.studioImageVerified === true
+    source.studioImageVerified === true &&
+    isAiStudioGenerated(source)
     ? (source.studioImageDataUrl || "")
     : "";
   manualSourceImageUrl = source.sourceImageUrl || "";
@@ -1554,6 +1560,7 @@ async function saveManualEntry(){
     existing.imageStatus === "studio_verified" &&
     existing.assetVersion === STUDIO_ASSET_VERSION &&
     existing.studioImageVerified === true &&
+    isAiStudioGenerated(existing) &&
     existing.studioImageDataUrl
   );
   const sourceImageUrl = manualSourceImageUrl || (existing && existing.sourceImageUrl) || "";
@@ -3019,6 +3026,7 @@ function renderProductImage(body, product){
   const verifiedStudio = product.imageStatus === "studio_verified" &&
     product.assetVersion === STUDIO_ASSET_VERSION &&
     product.studioImageVerified === true &&
+    isAiStudioGenerated(product) &&
     !!product.studioImageDataUrl;
   const imageSource = verifiedStudio ? product.studioImageDataUrl : product.sourceImageUrl || "";
   label.textContent = verifiedStudio
@@ -3489,7 +3497,12 @@ async function lookupProduct(barcode, metadata){
         elapsedMs:Math.round(performance.now() - startedAt)
       };
       debugLog("product_lookup_completed", Object.assign({}, lastResult.lookup, { sources:data.sources || [] }));
-      const inventoryRecordReady = data.product.source === "My inventory database" && !!data.product.studioImageDataUrl;
+      const inventoryRecordReady = data.product.source === "My inventory database" &&
+        data.product.imageStatus === "studio_verified" &&
+        data.product.assetVersion === STUDIO_ASSET_VERSION &&
+        data.product.studioImageVerified === true &&
+        isAiStudioGenerated(data.product) &&
+        !!data.product.studioImageDataUrl;
       renderProductMatch(data.product, {
         autoPhoto:!inventoryRecordReady,
         alreadySaved:inventoryRecordReady
