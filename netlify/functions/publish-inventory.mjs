@@ -5,6 +5,10 @@ const INVENTORY_PATH = "data/inventory/inventory.json";
 const MAX_BODY_CHARS = 4500000;
 const MAX_IMAGE_DATA_LENGTH = 4000000;
 const MAX_ITEMS = 10;
+const INVENTORY_SCHEMA_VERSION = 2;
+const STUDIO_ASSET_VERSION = "studio-v1";
+const STUDIO_IMAGE_WIDTH = 1000;
+const STUDIO_IMAGE_HEIGHT = 1000;
 const GITHUB_API_VERSION = "2022-11-28";
 
 function text(value, maxLength = 400) {
@@ -150,6 +154,36 @@ function cleanId(value) {
   return normalized || "item-" + Date.now();
 }
 
+function cleanGtin(value) {
+  const digits = String(value ?? "").replace(/[^0-9]/g, "");
+  return /^\d{8,14}$/.test(digits) ? digits : "";
+}
+
+function cleanList(value, maxItems = 8, maxLength = 600) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => text(item, maxLength))
+    .filter(Boolean)
+    .slice(0, maxItems);
+}
+
+function normalizeSourceEvidence(value, barcode) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {
+      barcode: barcode || "",
+      sources: [],
+      urls: [],
+      notes: "",
+    };
+  }
+  return {
+    barcode: cleanGtin(value.barcode || barcode),
+    sources: cleanList(value.sources, 8, 160),
+    urls: cleanList(value.urls, 8, 1000).filter((url) => /^https?:\/\//i.test(url)),
+    notes: text(value.notes, 500),
+  };
+}
+
 function normalizeItem(input) {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     const error = new Error("An inventory item is required.");
@@ -157,9 +191,15 @@ function normalizeItem(input) {
     throw error;
   }
 
+  const barcode = cleanGtin(input.gtin || input.barcode);
   const item = {
-    id: cleanId(input.id || input.barcode || input.name),
-    barcode: text(input.barcode, 120),
+    id: cleanId(input.id || (barcode ? "gtin-" + barcode : input.name)),
+    barcode,
+    gtin: barcode,
+    canonicalProductId: text(
+      input.canonicalProductId || (barcode ? "gtin:" + barcode : ""),
+      180,
+    ),
     name: text(input.name, 240),
     brand: text(input.brand, 160),
     volume: text(input.volume, 100),
@@ -172,9 +212,19 @@ function normalizeItem(input) {
     country: text(input.country, 120),
     source: text(input.source, 180),
     matchConfidence: text(input.matchConfidence, 100),
+    confidence: text(input.confidence || input.matchConfidence, 100),
+    sourceEvidence: normalizeSourceEvidence(input.sourceEvidence, barcode),
     scope: text(input.scope || "in_scope", 60),
     photoVerified: input.photoVerified !== false,
     sourcePhotoCaptured: input.sourcePhotoCaptured === true,
+    barcodePhotoConflict: input.barcodePhotoConflict === true,
+    imageStatus: text(input.imageStatus, 60),
+    assetVersion: text(input.assetVersion, 60),
+    studioImageVerified: input.studioImageVerified === true,
+    studioImageWidth: Number(input.studioImageWidth) || 0,
+    studioImageHeight: Number(input.studioImageHeight) || 0,
+    needsReview: input.needsReview === true,
+    reviewReason: text(input.reviewReason, 400),
     createdAt: text(input.createdAt, 80),
     updatedAt: text(input.updatedAt, 80),
   };
@@ -185,6 +235,28 @@ function normalizeItem(input) {
     throw error;
   }
   return item;
+}
+
+function validatePublishableItem(item, hasExistingImage, hasNewImage) {
+  const reasons = [];
+  if (!item.barcode) reasons.push("a valid 8â€“14 digit barcode is required");
+  if (item.canonicalProductId !== "gtin:" + item.barcode) reasons.push("canonical GTIN identity is missing");
+  if (!item.name) reasons.push("product name is required");
+  if (!item.brand) reasons.push("brand is required");
+  if (!item.volume) reasons.push("bottle or pack size is required");
+  if (!(item.type || item.category)) reasons.push("product type or category is required");
+  if (!item.sourcePhotoCaptured) reasons.push("a source bottle photo is required");
+  if (!item.photoVerified) reasons.push("bottle photo verification is required");
+  if (item.barcodePhotoConflict) reasons.push("barcode and bottle photo conflict");
+  if (item.needsReview) reasons.push(item.reviewReason || "item needs review");
+  if (item.imageStatus !== "studio_verified") reasons.push("studio image verification is required");
+  if (item.assetVersion !== STUDIO_ASSET_VERSION) reasons.push("unsupported studio asset version");
+  if (!item.studioImageVerified) reasons.push("studio image has not been verified");
+  if (item.studioImageWidth !== STUDIO_IMAGE_WIDTH || item.studioImageHeight !== STUDIO_IMAGE_HEIGHT) {
+    reasons.push("studio image must be 1000 x 1000");
+  }
+  if (!hasExistingImage && !hasNewImage) reasons.push("verified studio image data is required");
+  return Array.from(new Set(reasons));
 }
 
 function decodeImageDataUrl(value) {
@@ -228,19 +300,20 @@ function rawImageUrl(repository, branch, path) {
 
 function parseInventoryDocument(file) {
   if (!file?.content) {
-    return { schemaVersion: 1, app: "backbar-product-identification", items: [] };
+    return { schemaVersion: INVENTORY_SCHEMA_VERSION, app: "backbar-product-identification", items: [], quarantinedItemCount: 0 };
   }
   try {
     const parsed = JSON.parse(file.content);
     return {
       schemaVersion: Number(parsed?.schemaVersion) || 1,
       app: text(parsed?.app || "backbar-product-identification", 120),
+      quarantinedItemCount: Number(parsed?.quarantinedItemCount) || 0,
       items: Array.isArray(parsed?.items)
         ? parsed.items.filter((item) => item && typeof item === "object").slice(-MAX_ITEMS)
         : [],
     };
   } catch {
-    return { schemaVersion: 1, app: "backbar-product-identification", items: [] };
+    return { schemaVersion: INVENTORY_SCHEMA_VERSION, app: "backbar-product-identification", items: [], quarantinedItemCount: 0 };
   }
 }
 
@@ -316,6 +389,13 @@ export default async function publishInventory(request) {
     let imagePath = validImagePath(previous?.github?.imagePath);
     let imageUrl = rawImageUrl(config.repository, config.branch, imagePath);
     let imageCommit = null;
+    const validationErrors = validatePublishableItem(item, !!imagePath, !!image);
+    if (validationErrors.length) {
+      const error = new Error("Inventory validation failed.");
+      error.status = 422;
+      error.validationErrors = validationErrors;
+      throw error;
+    }
 
     if (image) {
       imagePath = "data/inventory/images/" + item.id + "." + image.extension;
@@ -341,11 +421,12 @@ export default async function publishInventory(request) {
     );
 
     const nextDocument = {
-      schemaVersion: 1,
+      schemaVersion: INVENTORY_SCHEMA_VERSION,
       app: "backbar-product-identification",
       repository: config.repository,
       branch: config.branch,
       updatedAt: now,
+      quarantinedItemCount: document.quarantinedItemCount || 0,
       items: items.slice(-MAX_ITEMS),
     };
     const metadataCommit = await writeTextFile(
@@ -368,6 +449,13 @@ export default async function publishInventory(request) {
       item: published,
     });
   } catch (error) {
+    if (Array.isArray(error?.validationErrors)) {
+      return response(422, {
+        ok: false,
+        error: "Inventory validation failed: " + error.validationErrors.join("; ") + ".",
+        validationErrors: error.validationErrors,
+      });
+    }
     const githubStatus = Number(error?.status) || null;
     const status = githubStatus === 409
       ? 409
