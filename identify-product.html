@@ -5,6 +5,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Backbar Scanner</title>
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script>
+  // Loaded only when a photo is processed. If the device or CDN cannot load the
+  // model, the app falls back to the same fixed white studio canvas.
+  window.backbarBackgroundRemovalReady = import("https://cdn.jsdelivr.net/npm/@imgly/background-removal@1.7.0/+esm")
+    .then(module => module.default || module.removeBackground || null)
+    .catch(error => {
+      console.warn("Background removal model unavailable; using studio canvas fallback.", error);
+      return null;
+    });
+</script>
 <style>
 :root{
   --bg:#141210; --panel:#1c1914; --line:#3a332a; --text:#ede7dc;
@@ -122,7 +132,7 @@ p.sub{color:var(--muted);font-size:13.5px;margin:0 0 26px;}
 .manual-actions{display:flex;gap:8px;margin-top:18px;}
 .manual-actions .btn{padding:12px;font-size:14px;}
 .studio-badge{display:inline-block;margin-top:7px;padding:4px 7px;border-radius:5px;background:#e8f5ef;color:#17664e;font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;}
-.product-image-frame{min-height:235px;aspect-ratio:3/4;padding:14px;background:#fff;border:1px solid #e9e4da;}
+.product-image-frame{min-height:235px;aspect-ratio:1/1;padding:14px;background:#fff;border:1px solid #e9e4da;}
 .product-image-frame img{width:100%;height:auto;max-width:100%;max-height:100%;flex:1;min-height:0;object-fit:contain;border-radius:0;}
 .product-image-missing{display:flex;align-items:center;justify-content:center;width:100%;height:100%;min-height:190px;color:#665d50;background:#fff;font-size:13px;text-align:center;padding:20px;}
 .source-image-label{color:#665d50;font-weight:600;}
@@ -142,7 +152,7 @@ p.sub{color:var(--muted);font-size:13.5px;margin:0 0 26px;}
 <div id="app">
   <h1>Backbar Scanner</h1>
   <div class="app-version" id="app-version" aria-label="Application version"></div>
-  <p class="sub">Mini liquid-stock inventory test — scan, identify, standardize, and save up to 10 products.</p>
+  <p class="sub">Mini liquid-stock inventory test — scan, photograph, verify, standardize, and save up to 10 products.</p>
   <div class="inventory-summary">
     <span>My database · this device</span>
     <strong id="inventory-count">0 / 10</strong>
@@ -154,7 +164,7 @@ p.sub{color:var(--muted);font-size:13.5px;margin:0 0 26px;}
     <button class="btn secondary" id="btn-inventory">View inventory</button>
   </div>
   <div class="engine-note" id="engine-note"></div>
-  <div class="workflow-note">Automatic flow: database → public catalogs/API → Haiku web evidence → photo recognition → manual entry. Manual buttons remain available as overrides at every stage.</div>
+  <div class="workflow-note">Automatic flow: barcode → bottle photo → AI evidence → studio image → inventory. Manual buttons remain available as overrides at every stage.</div>
   <div class="diag-tools">
     <div class="diag-actions">
       <button class="diag-btn" id="btn-view-log">View debug log</button>
@@ -278,7 +288,7 @@ p.sub{color:var(--muted);font-size:13.5px;margin:0 0 26px;}
 (function(){
 "use strict";
 
-const APP_VERSION = "0.5.2";
+const APP_VERSION = "0.6.0";
 const appVersionEl = document.getElementById("app-version");
 if (appVersionEl) appVersionEl.textContent = "Version " + APP_VERSION;
 document.title = "Barcode Scanner Test · v" + APP_VERSION;
@@ -969,8 +979,9 @@ const INVENTORY_STORAGE_KEY = "backbar_mini_inventory_v1";
 const INVENTORY_MAX_ITEMS = 10;
 const PHOTO_LOOKUP_ENDPOINT = "/.netlify/functions/photo-lookup";
 const MAX_IMAGE_EDGE = 1400;
-const STUDIO_IMAGE_WIDTH = 900;
-const STUDIO_IMAGE_HEIGHT = 1200;
+const STUDIO_IMAGE_WIDTH = 1000;
+const STUDIO_IMAGE_HEIGHT = 1000;
+const BACKGROUND_REMOVAL_WAIT_MS = 18000;
 let inventoryItems = [];
 let manualEditingId = null;
 let manualStudioImageDataUrl = "";
@@ -981,6 +992,7 @@ const AUTO_FALLBACK_DELAY_MS = 750;
 let workflowToken = 0;
 let automaticFallbackTimer = null;
 let automaticPhotoPromptTimer = null;
+let studioImageProcessingMode = "canvas_fallback";
 
 const inventoryCard = document.getElementById("inventory-card");
 const inventoryList = document.getElementById("inventory-list");
@@ -1248,7 +1260,85 @@ function readAndResizeImage(file){
     reader.readAsDataURL(file);
   });
 }
-function createStudioImage(sourceDataUrl){
+function blobToDataUrl(blob){
+  return new Promise((resolve,reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Could not read the processed studio image."));
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.readAsDataURL(blob);
+  });
+}
+async function removeBackgroundForStudio(sourceDataUrl){
+  studioImageProcessingMode = "canvas_fallback";
+  const ready = window.backbarBackgroundRemovalReady;
+  if (!ready) return sourceDataUrl;
+
+  let remover = null;
+  try {
+    remover = await Promise.race([
+      ready,
+      new Promise(resolve => setTimeout(() => resolve(null), BACKGROUND_REMOVAL_WAIT_MS))
+    ]);
+  } catch(error) {
+    debugLog("studio_background_model_load_failed", { error:errorDetails(error) });
+    return sourceDataUrl;
+  }
+  if (typeof remover !== "function") return sourceDataUrl;
+
+  try {
+    const processed = await Promise.race([
+      Promise.resolve(remover(sourceDataUrl)),
+      new Promise(resolve => setTimeout(() => resolve(null), BACKGROUND_REMOVAL_WAIT_MS))
+    ]);
+    if (!processed) {
+      debugLog("studio_background_removal_timeout", { timeoutMs:BACKGROUND_REMOVAL_WAIT_MS });
+      return sourceDataUrl;
+    }
+    const processedDataUrl = await blobToDataUrl(processed);
+    if (!processedDataUrl) return sourceDataUrl;
+    studioImageProcessingMode = "ai-background-removal";
+    return processedDataUrl;
+  } catch(error) {
+    debugLog("studio_background_removal_failed", { error:errorDetails(error) });
+    return sourceDataUrl;
+  }
+}
+function alphaBounds(source){
+  try {
+    const width = source.naturalWidth || source.width;
+    const height = source.naturalHeight || source.height;
+    const probe = document.createElement("canvas");
+    probe.width = width;
+    probe.height = height;
+    const context = probe.getContext("2d", { willReadFrequently:true });
+    context.clearRect(0,0,width,height);
+    context.drawImage(source,0,0,width,height);
+    const pixels = context.getImageData(0,0,width,height).data;
+    let left = width, top = height, right = -1, bottom = -1;
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        if (pixels[(y * width + x) * 4 + 3] > 24) {
+          if (x < left) left = x;
+          if (x > right) right = x;
+          if (y < top) top = y;
+          if (y > bottom) bottom = y;
+        }
+      }
+    }
+    if (right < left || bottom < top) return null;
+    return {
+      x:left,
+      y:top,
+      width:right - left + 1,
+      height:bottom - top + 1
+    };
+  } catch(error) {
+    debugLog("studio_alpha_bounds_failed", { error:errorDetails(error) });
+    return null;
+  }
+}
+async function createStudioImage(sourceDataUrl){
+  const processedSource = await removeBackgroundForStudio(sourceDataUrl);
   return new Promise((resolve,reject) => {
     const source = new Image();
     source.onload = () => {
@@ -1258,18 +1348,37 @@ function createStudioImage(sourceDataUrl){
       const context = canvas.getContext("2d");
       context.fillStyle = "#ffffff";
       context.fillRect(0,0,canvas.width,canvas.height);
-      const padding = 80;
+
+      const bounds = alphaBounds(source) || {
+        x:0,
+        y:0,
+        width:source.naturalWidth || source.width,
+        height:source.naturalHeight || source.height
+      };
+      const padding = studioImageProcessingMode === "ai-background-removal" ? 55 : 80;
       const scale = Math.min(
-        (canvas.width - padding * 2) / source.width,
-        (canvas.height - padding * 2) / source.height
+        (canvas.width - padding * 2) / bounds.width,
+        (canvas.height - padding * 2) / bounds.height
       );
-      const width = source.width * scale;
-      const height = source.height * scale;
-      context.drawImage(source,(canvas.width-width)/2,(canvas.height-height)/2,width,height);
-      resolve(canvas.toDataURL("image/jpeg",0.88));
+      const width = bounds.width * scale;
+      const height = bounds.height * scale;
+      context.imageSmoothingEnabled = true;
+      context.imageSmoothingQuality = "high";
+      context.drawImage(
+        source,
+        bounds.x,
+        bounds.y,
+        bounds.width,
+        bounds.height,
+        (canvas.width - width) / 2,
+        (canvas.height - height) / 2,
+        width,
+        height
+      );
+      resolve(canvas.toDataURL("image/jpeg",0.9));
     };
     source.onerror = () => reject(new Error("Could not create the studio image."));
-    source.src = sourceDataUrl;
+    source.src = processedSource;
   });
 }
 function clearAutomaticFallbackTimer(){
@@ -1328,6 +1437,169 @@ function scheduleAutomaticPhotoFallback(reason, details){
     openPhotoLookup({ automatic:true });
   }, AUTO_FALLBACK_DELAY_MS);
 }
+function normalizedProductIdentity(value){
+  return String(value || "")
+    .toLowerCase()
+    .replace(/coca[-\s]?cola/g, "coke")
+    .replace(/\bzero[-\s]?sugar\b/g, "zero")
+    .replace(/\bsugar[-\s]?free\b/g, "zero")
+    .replace(/[^a-z0-9]+/g, " ")
+    .split(/\s+/)
+    .filter(token => token.length >= 2)
+    .join(" ")
+    .trim();
+}
+function productIdentityConflict(left, right){
+  if (!left || !right) return false;
+  const leftBrand = normalizedProductIdentity(left.brand);
+  const rightBrand = normalizedProductIdentity(right.brand);
+  if (leftBrand && rightBrand &&
+      !leftBrand.includes(rightBrand) &&
+      !rightBrand.includes(leftBrand)) {
+    return true;
+  }
+  const leftName = normalizedProductIdentity([left.brand,left.name,left.variant].filter(Boolean).join(" "));
+  const rightName = normalizedProductIdentity([right.brand,right.name,right.variant].filter(Boolean).join(" "));
+  if (!leftName || !rightName) return false;
+  const leftTokens = new Set(leftName.split(/\s+/));
+  const overlap = rightName.split(/\s+/).some(token => leftTokens.has(token));
+  return !overlap;
+}
+function mergePhotoEvidenceProducts(barcodeProduct, photoProduct, barcode){
+  const primary = barcodeProduct || {};
+  const photo = photoProduct || {};
+  const conflict = productIdentityConflict(primary, photo);
+  const merged = Object.assign({}, photo, primary, {
+    barcode:barcode || primary.barcode || photo.barcode || "",
+    name:primary.name || photo.name || "",
+    brand:primary.brand || photo.brand || "",
+    type:primary.type || photo.type || "",
+    variant:primary.variant || photo.variant || "",
+    volume:primary.volume || photo.volume || "",
+    abv:primary.abv || photo.abv || "",
+    packaging:primary.packaging || photo.packaging || "",
+    country:primary.country || photo.country || "",
+    category:primary.category || photo.category || "",
+    description:primary.description || photo.description || "",
+    sourceRecordUrl:primary.sourceRecordUrl || photo.sourceRecordUrl || "",
+    sourceUrls:Array.from(new Set([...(primary.sourceUrls || []), ...(photo.sourceUrls || [])])),
+    evidence:[primary.evidence, photo.evidence].filter(Boolean).join(" · "),
+    source:[primary.source, photo.source].filter(Boolean).filter((value,index,array) => array.indexOf(value) === index).join(" + "),
+    matchConfidence:conflict ? "Needs manual review" : "Barcode + photo confirmed",
+    photoVerified:true,
+    barcodePhotoConflict:conflict
+  });
+  return { product:merged, conflict:conflict };
+}
+function saveProductToInventory(product, sourceImageUrl){
+  if (!product || !product.name) return null;
+  const barcode = String(product.barcode || "").trim();
+  const existing = barcode ? findInventoryByBarcode(barcode) : null;
+  if (!existing && inventoryItems.length >= INVENTORY_MAX_ITEMS) {
+    debugLog("inventory_auto_save_blocked", {
+      barcode:barcode || null,
+      name:truncate(product.name,160),
+      reason:"inventory_limit_reached",
+      maxItems:INVENTORY_MAX_ITEMS
+    });
+    return null;
+  }
+  const now = new Date().toISOString();
+  const record = Object.assign({}, existing || {}, product, {
+    id:existing ? existing.id : "inv-" + Date.now() + "-" + Math.random().toString(16).slice(2),
+    barcode:barcode || product.barcode || "",
+    source:product.source || "Barcode + photo + AI",
+    matchConfidence:product.matchConfidence || "Barcode + photo confirmed",
+    scope:"in_scope",
+    studioImageDataUrl:product.studioImageDataUrl || (existing && existing.studioImageDataUrl) || "",
+    sourceImageUrl:sourceImageUrl || product.sourceImageUrl || (existing && existing.sourceImageUrl) || "",
+    sourcePhotoCaptured:!!(sourceImageUrl || product.sourceImageUrl || (existing && existing.sourceImageUrl)),
+    photoVerified:product.photoVerified !== false,
+    createdAt:existing && existing.createdAt ? existing.createdAt : now,
+    updatedAt:now
+  });
+  if (!record.studioImageDataUrl) {
+    debugLog("inventory_auto_save_blocked", {
+      barcode:record.barcode || null,
+      name:truncate(record.name,160),
+      reason:"studio_image_missing"
+    });
+    return null;
+  }
+  if (existing) {
+    inventoryItems = inventoryItems.map(item => item.id === existing.id ? record : item);
+  } else {
+    inventoryItems.push(record);
+  }
+  if (!writeInventory()) return null;
+  debugLog("inventory_item_auto_saved", {
+    id:record.id,
+    barcode:record.barcode || null,
+    name:truncate(record.name,160),
+    hasStudioImage:true,
+    studioImageProcessing:studioImageProcessingMode,
+    sourcePhotoCaptured:record.sourcePhotoCaptured,
+    editing:!!existing,
+    count:inventoryItems.length
+  });
+  return record;
+}
+function scheduleAutomaticPhotoCapture(reason, details){
+  clearAutomaticFallbackTimer();
+  const token = workflowToken;
+  updateWorkflowStatus("Step 4 of 5 · Photo required — opening the camera/photo picker…", "pending");
+  debugLog("workflow_auto_photo_scheduled", Object.assign({
+    from:"barcode_lookup",
+    to:"photo_recognition",
+    reason:reason,
+    delayMs:AUTO_FALLBACK_DELAY_MS
+  }, details || {}));
+  automaticFallbackTimer = setTimeout(() => {
+    automaticFallbackTimer = null;
+    if (token !== workflowToken || photoLookupInFlight || manualCard.classList.contains("show")) {
+      debugLog("workflow_auto_photo_skipped", {
+        reason:"workflow_interrupted"
+      });
+      return;
+    }
+    debugLog("workflow_auto_advanced", {
+      from:"barcode_lookup",
+      to:"photo_recognition",
+      reason:reason
+    });
+    openPhotoLookup({ automatic:true, reason:reason });
+  }, AUTO_FALLBACK_DELAY_MS);
+}
+function scheduleAutomaticInventorySave(product, sourceImageUrl){
+  clearAutomaticFallbackTimer();
+  const token = workflowToken;
+  setTimeout(() => {
+    if (token !== workflowToken || !product) return;
+    const saved = saveProductToInventory(product, sourceImageUrl);
+    if (!saved) {
+      updateWorkflowStatus("Step 5 of 5 · Could not save automatically — manual confirmation required", "warning");
+      setResultButtonState({ canSave:false, photo:false, manual:true, saveLabel:"Manual confirmation required" });
+      scheduleAutomaticManualFallback("inventory_auto_save_failed");
+      return;
+    }
+    if (lastResult) lastResult.product = saved;
+    updateWorkflowStatus("Step 5 of 5 · Saved to inventory automatically", "success");
+    setResultButtonState({ canSave:false, photo:false, manual:true, saveLabel:"Saved to inventory" });
+    const body = document.getElementById("r-body");
+    if (body && !body.querySelector(".auto-save-note")) {
+      const note = document.createElement("div");
+      note.className = "product-source-note auto-save-note";
+      note.textContent = "Saved automatically to this phone's inventory. Use Manual entry to override any field.";
+      body.appendChild(note);
+    }
+    debugLog("workflow_auto_completed", {
+      barcode:saved.barcode || null,
+      name:truncate(saved.name,160),
+      studioImageProcessing:studioImageProcessingMode
+    });
+  }, 450);
+}
+
 function scheduleAutomaticManualFallback(reason, details){
   clearAutomaticFallbackTimer();
   const token = workflowToken;
@@ -1372,6 +1644,7 @@ function setResultButtonState(options){
   if (save) {
     save.style.display = "";
     save.disabled = !opts.canSave;
+    save.textContent = opts.saveLabel || "Save to inventory";
   }
 }
 function saveCurrentResultToInventory(){
@@ -1441,6 +1714,13 @@ async function handlePhotoSelected(event){
   try {
     const sourceDataUrl = await readAndResizeImage(file);
     const studioImageDataUrl = await createStudioImage(sourceDataUrl);
+    debugLog("studio_image_prepared", {
+      mode:studioImageProcessingMode,
+      width:STUDIO_IMAGE_WIDTH,
+      height:STUDIO_IMAGE_HEIGHT,
+      sourceBytes:sourceDataUrl.length,
+      studioBytes:studioImageDataUrl.length
+    });
     await runPhotoLookup(sourceDataUrl, studioImageDataUrl);
   } catch(error) {
     debugLog("photo_prepare_failed", { error:errorDetails(error) });
@@ -1453,45 +1733,121 @@ async function runPhotoLookup(sourceDataUrl, studioImageDataUrl){
   photoLookupInFlight = true;
   const runToken = workflowToken;
   const barcode = lastResult && lastResult.barcode ? lastResult.barcode : "";
+  const barcodeProduct = lastResult && lastResult.product ? lastResult.product : null;
   const startedAt = performance.now();
   resultCard.classList.add("show");
-  document.getElementById("r-body").innerHTML = '<div class="barcode-meta">AI is reading the label and checking evidence…</div><div class="barcode-note">The image is resized locally before upload and is not stored by this app.</div>';
+  document.getElementById("r-body").innerHTML =
+    '<div class="barcode-meta">AI is reading the label and checking barcode evidence…</div>' +
+    '<div class="barcode-note">The source photo is resized locally, used for recognition, and retained with the saved item on this phone.</div>';
   setResultButtonState({ canSave:false, photo:false, manual:true });
-  debugLog("photo_lookup_started", { barcode:barcode || null, imageProcessing:"local_resize_and_studio_canvas", model:"claude-haiku-4-5-20251001" });
+  debugLog("photo_lookup_started", {
+    barcode:barcode || null,
+    imageProcessing:studioImageProcessingMode,
+    model:"claude-haiku-4-5-20251001",
+    barcodeProduct:barcodeProduct ? {
+      name:truncate(barcodeProduct.name,160),
+      brand:truncate(barcodeProduct.brand,100),
+      volume:truncate(barcodeProduct.volume,80)
+    } : null
+  });
   try {
     const response = await fetch(PHOTO_LOOKUP_ENDPOINT, {
       method:"POST",
       headers:{ "Content-Type":"application/json" },
       credentials:"same-origin",
-      body:JSON.stringify({ imageDataUrl:sourceDataUrl, barcode:barcode || null })
+      body:JSON.stringify({
+        imageDataUrl:sourceDataUrl,
+        barcode:barcode || null,
+        barcodeProduct:barcodeProduct ? {
+          name:barcodeProduct.name || "",
+          brand:barcodeProduct.brand || "",
+          variant:barcodeProduct.variant || "",
+          volume:barcodeProduct.volume || "",
+          type:barcodeProduct.type || "",
+          source:barcodeProduct.source || ""
+        } : null
+      })
     });
     const raw = await response.text();
     let data = null;
     try { data = raw ? JSON.parse(raw) : null; } catch(error) {}
-    debugLog("photo_lookup_http_response", { status:response.status, ok:response.ok, elapsedMs:Math.round(performance.now()-startedAt) });
+    debugLog("photo_lookup_http_response", {
+      status:response.status,
+      ok:response.ok,
+      elapsedMs:Math.round(performance.now()-startedAt)
+    });
     if (runToken !== workflowToken) {
       debugLog("photo_lookup_ignored", { reason:"manual_override_or_new_workflow", elapsedMs:Math.round(performance.now()-startedAt) });
       return;
     }
-    if (!response.ok || !data || data.ok !== true) throw new Error((data && data.error) || "Photo lookup returned an invalid response");
+    if (!response.ok || !data || data.ok !== true) {
+      throw new Error((data && data.error) || "Photo lookup returned an invalid response");
+    }
     if (data.found && data.product) {
-      const product = Object.assign({}, data.product, { barcode:barcode || data.product.barcode || "", studioImageDataUrl:studioImageDataUrl });
-      lastResult = { barcode:product.barcode, rawValue:product.barcode || "photo", format:"image", product:product, lookup:{status:"found",source:product.source,name:product.name} };
-      debugLog("photo_lookup_completed", { status:"found", name:truncate(product.name,160), brand:truncate(product.brand,100), hasStudioImage:true, sourceUrlCount:Array.isArray(product.sourceUrls)?product.sourceUrls.length:0, elapsedMs:Math.round(performance.now()-startedAt) });
-      updateWorkflowStatus("Step 4 of 5 · Photo recognition found a candidate — confirm before saving", "success");
-      renderProductMatch(product);
+      const evidence = mergePhotoEvidenceProducts(barcodeProduct, data.product, barcode);
+      const product = Object.assign({}, evidence.product, {
+        barcode:barcode || data.product.barcode || "",
+        studioImageDataUrl:studioImageDataUrl,
+        sourceImageUrl:sourceDataUrl,
+        sourcePhotoCaptured:true,
+        photoVerified:!evidence.conflict
+      });
+      lastResult = {
+        barcode:product.barcode,
+        rawValue:product.barcode || "photo",
+        format:"image",
+        product:product,
+        lookup:{status:"found",source:product.source,name:product.name}
+      };
+      debugLog("photo_lookup_completed", {
+        status:evidence.conflict ? "conflict" : "found",
+        name:truncate(product.name,160),
+        brand:truncate(product.brand,100),
+        volume:truncate(product.volume,80),
+        hasStudioImage:true,
+        studioImageProcessing:studioImageProcessingMode,
+        barcodePhotoConflict:evidence.conflict,
+        sourceUrlCount:Array.isArray(product.sourceUrls) ? product.sourceUrls.length : 0,
+        elapsedMs:Math.round(performance.now()-startedAt)
+      });
+      if (evidence.conflict) {
+        updateWorkflowStatus("Barcode and bottle photo disagree — manual review required", "warning");
+        renderProductMatch(product, { conflict:true });
+        setResultButtonState({ canSave:false, photo:true, manual:true, saveLabel:"Manual review required" });
+        const conflictNote = document.createElement("div");
+        conflictNote.className = "report-note";
+        conflictNote.textContent = "The barcode result and the photographed label do not match. Nothing was saved automatically.";
+        document.getElementById("r-body").appendChild(conflictNote);
+        scheduleAutomaticManualFallback("barcode_photo_conflict", {
+          barcode:barcode || null,
+          photoProduct:truncate(data.product.name,160)
+        });
+      } else {
+        updateWorkflowStatus("Step 4 of 5 · Barcode and photo agree — preparing inventory image", "success");
+        renderProductMatch(product, { pendingAutoSave:true });
+        scheduleAutomaticInventorySave(product, sourceDataUrl);
+      }
     } else {
-      debugLog("photo_lookup_completed", { status:"not_found", sources:data.sources||[], elapsedMs:Math.round(performance.now()-startedAt) });
+      debugLog("photo_lookup_completed", {
+        status:"not_found",
+        sources:data.sources || [],
+        elapsedMs:Math.round(performance.now()-startedAt)
+      });
       const body = document.getElementById("r-body");
-      body.innerHTML = '<div class="barcode-note">The label could not be identified confidently from this photo.</div><div class="product-source-note">Try a closer, well-lit photo of the front label or use manual entry.</div>';
-      setResultButtonState({ canSave:false, photo:true, manual:true });
-      scheduleAutomaticManualFallback("photo_no_verified_match", { sourceCount:Array.isArray(data.sources) ? data.sources.length : 0 });
+      body.innerHTML =
+        '<div class="barcode-note">The bottle photo could not be matched confidently to the barcode.</div>' +
+        '<div class="product-source-note">Nothing was saved automatically. Manual entry remains available.</div>';
+      setResultButtonState({ canSave:false, photo:true, manual:true, saveLabel:"Manual confirmation required" });
+      scheduleAutomaticManualFallback("photo_no_verified_match", {
+        sourceCount:Array.isArray(data.sources) ? data.sources.length : 0
+      });
     }
   } catch(error) {
     if (runToken !== workflowToken) return;
     debugLog("photo_lookup_failed", { error:errorDetails(error), elapsedMs:Math.round(performance.now()-startedAt) });
-    document.getElementById("r-body").innerHTML = '<div class="barcode-note">Photo recognition could not be reached. Moving to manual entry.</div>';
-    setResultButtonState({ canSave:false, photo:true, manual:true });
+    document.getElementById("r-body").innerHTML =
+      '<div class="barcode-note">Photo recognition could not be reached. Moving to manual entry.</div>';
+    setResultButtonState({ canSave:false, photo:true, manual:true, saveLabel:"Manual confirmation required" });
     scheduleAutomaticManualFallback("photo_lookup_failed", { error:errorDetails(error) });
   } finally {
     photoLookupInFlight = false;
@@ -1502,7 +1858,10 @@ function handleManualPhotoSelected(event){
   event.target.value = "";
   if (!file) return;
   readAndResizeImage(file)
-    .then(createStudioImage)
+    .then(sourceDataUrl => {
+      manualSourceImageUrl = sourceDataUrl;
+      return createStudioImage(sourceDataUrl);
+    })
     .then(dataUrl => {
       manualStudioImageDataUrl = dataUrl;
       manualPhotoPreview.innerHTML = "";
@@ -2200,16 +2559,52 @@ function renderProductImage(body, product){
   body.appendChild(frame);
 }
 
-function renderProductMatch(product){
+function renderProductMatch(product, options){
+  const opts = options || {};
   const body = document.getElementById("r-body");
   body.innerHTML = "";
-  lastResult = Object.assign({}, lastResult || {}, { product:product, lookup:{ status:"found", source:product.source || "unknown" } });
-  setResultButtonState({ canSave:true, photo:true, manual:true });
-  updateWorkflowStatus("Verified product record — confirm details and save to inventory", "success");
+  lastResult = Object.assign({}, lastResult || {}, {
+    product:product,
+    lookup:{ status:"found", source:product.source || "unknown" }
+  });
+  const waitingForPhoto = opts.autoPhoto === true;
+  const waitingForSave = opts.pendingAutoSave === true;
+  const conflict = opts.conflict === true || product.barcodePhotoConflict === true;
+  const alreadySaved = opts.alreadySaved === true;
+  setResultButtonState({
+    canSave:!waitingForPhoto && !waitingForSave && !conflict && !alreadySaved,
+    photo:!alreadySaved,
+    manual:true,
+    saveLabel:waitingForPhoto
+      ? "Photo required before save"
+      : conflict
+        ? "Manual review required"
+        : waitingForSave
+          ? "Preparing inventory image…"
+          : alreadySaved
+            ? "Saved to inventory"
+            : "Save to inventory"
+  });
+  updateWorkflowStatus(
+    conflict
+      ? "Barcode and bottle photo disagree — manual review required"
+      : waitingForPhoto
+        ? "Step 3 of 5 · Barcode match found — photo verification required"
+        : waitingForSave
+          ? "Step 4 of 5 · Photo verified — saving the studio item…"
+          : alreadySaved
+            ? "Saved inventory record loaded from this phone"
+            : product.photoVerified
+              ? "Barcode and bottle photo verified"
+              : "Verified product record — confirm details and save to inventory",
+    conflict ? "warning" : "success"
+  );
 
   const source = document.createElement("div");
   source.className = "barcode-meta";
-  source.textContent = "Product record found via " + (product.source || "online lookup");
+  source.textContent = product.photoVerified
+    ? "Barcode + bottle photo evidence verified via " + (product.source || "AI evidence")
+    : "Product record found via " + (product.source || "online lookup");
   body.appendChild(source);
 
   renderProductImage(body, product);
@@ -2243,8 +2638,8 @@ function renderProductMatch(product){
 
   const sourceNote = document.createElement("div");
   sourceNote.className = "product-source-note";
-  sourceNote.textContent = "Barcode: " + product.barcode + " · Source: " + (product.source || "unknown");  body.appendChild(sourceNote);
-
+  sourceNote.textContent = "Barcode: " + (product.barcode || "not supplied") + " · Source: " + (product.source || "unknown");
+  body.appendChild(sourceNote);
 
   if (product.matchConfidence || product.evidence) {
     const evidenceNote = document.createElement("div");
@@ -2283,8 +2678,14 @@ function renderProductMatch(product){
     link.textContent = "Open source product record";
     body.appendChild(link);
   }
-}
 
+  if (opts.autoPhoto) {
+    scheduleAutomaticPhotoCapture("barcode_match_ready", {
+      barcode:product.barcode || null,
+      name:truncate(product.name,160)
+    });
+  }
+}
 function renderNoProductMatch(barcode, sources, context){
   const body = document.getElementById("r-body");
   body.innerHTML = "";
@@ -2587,7 +2988,11 @@ async function lookupProduct(barcode, metadata){
         elapsedMs:Math.round(performance.now() - startedAt)
       };
       debugLog("product_lookup_completed", Object.assign({}, lastResult.lookup, { sources:data.sources || [] }));
-      renderProductMatch(data.product);
+      const inventoryRecordReady = data.product.source === "My inventory database" && !!data.product.studioImageDataUrl;
+      renderProductMatch(data.product, {
+        autoPhoto:!inventoryRecordReady,
+        alreadySaved:inventoryRecordReady
+      });
     } else {
       lastResult.lookup = {
         status:"not_found",
