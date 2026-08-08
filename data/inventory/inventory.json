@@ -3,7 +3,7 @@
   "app": "backbar-product-identification",
   "repository": "perfectoffer13/Scanner",
   "branch": "main",
-  "updatedAt": "2026-08-08T11:31:28.264Z",
+  "updatedAt": "2026-08-08T11:31:31.509Z",
   "items": [
     {
       "id": "inv-1786098733332-01bdcf2e28b8b8",
@@ -29,6 +29,32 @@
         "imagePath": "data/inventory/images/inv-1786098733332-01bdcf2e28b8b8.jpg",
         "imageUrl": "https://raw.githubusercontent.com/perfectoffer13/Scanner/main/data/inventory/images/inv-1786098733332-01bdcf2e28b8b8.jpg",
         "publishedAt": "2026-08-08T11:31:28.264Z"
+      }
+    },
+    {
+      "id": "inv-1786104713678-f0de60b04341",
+      "barcode": "",
+      "name": "Coca-Cola Zero Sugar",
+      "brand": "Coca-Cola",
+      "volume": "",
+      "variant": "Zero Sugar",
+      "type": "",
+      "abv": "0",
+      "category": "Soft Drinks / Cool Drinks",
+      "description": "Zero sugar, low kilojoule carbonated soft drink",
+      "packaging": "",
+      "country": "",
+      "source": "Manual entry",
+      "matchConfidence": "User-confirmed",
+      "scope": "in_scope",
+      "photoVerified": true,
+      "sourcePhotoCaptured": false,
+      "createdAt": "2026-08-07T12:11:53.678Z",
+      "updatedAt": "2026-08-07T12:11:53.678Z",
+      "github": {
+        "imagePath": "data/inventory/images/inv-1786104713678-f0de60b04341.jpg",
+        "imageUrl": "https://raw.githubusercontent.com/perfectoffer13/Scanner/main/data/inventory/images/inv-1786104713678-f0de60b04341.jpg",
+        "publishedAt": "2026-08-08T11:31:31.509Z"
       }
     }
   ]
