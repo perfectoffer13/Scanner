@@ -1,7 +1,7 @@
 (function(){
 "use strict";
 
-const APP_VERSION = "0.8.2";
+const APP_VERSION = "0.8.3";
 const appVersionEl = document.getElementById("app-version");
 if (appVersionEl) appVersionEl.textContent = "Version " + APP_VERSION;
 document.title = "Barcode Scanner Test · v" + APP_VERSION;
@@ -2022,7 +2022,7 @@ async function runPhotoLookup(sourceDataUrl){
              barcode:barcode || null,
              error:errorDetails(error)
            });
-           updateWorkflowStatus("Step 4 of 5 failed - AI studio image was not created. Retry or use Manual entry.", "warning");
+           updateWorkflowStatus("Step 4 of 5 failed — AI studio image generation", "warning");
            if (body) body.innerHTML =
              '<div class="barcode-note">The product was verified, but no inventory image was saved.</div>' +
              '<div class="workflow-error"><strong>Why it stopped</strong>AI studio rendering failed: ' + escapeHtml(message) + '</div>' +
