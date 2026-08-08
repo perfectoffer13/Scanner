@@ -3,7 +3,7 @@
   "app": "backbar-product-identification",
   "repository": "perfectoffer13/Scanner",
   "branch": "main",
-  "updatedAt": "2026-08-08T11:31:42.808Z",
+  "updatedAt": "2026-08-08T11:31:46.622Z",
   "items": [
     {
       "id": "inv-1786098733332-01bdcf2e28b8b8",
@@ -55,6 +55,32 @@
         "imagePath": "data/inventory/images/inv-1786104713678-f0de60b04341.jpg",
         "imageUrl": "https://raw.githubusercontent.com/perfectoffer13/Scanner/main/data/inventory/images/inv-1786104713678-f0de60b04341.jpg",
         "publishedAt": "2026-08-08T11:31:31.509Z"
+      }
+    },
+    {
+      "id": "inv-1786115795494-31ce8c27bdbf7",
+      "barcode": "8593868004690",
+      "name": "Miller Genuine Draft",
+      "brand": "Miller",
+      "volume": "12 fl oz",
+      "variant": "American Style Lager",
+      "type": "Beer",
+      "abv": "4.6%",
+      "category": "Lager Beer",
+      "description": "Cold-filtered American-style light lager beer",
+      "packaging": "",
+      "country": "",
+      "source": "Manual entry",
+      "matchConfidence": "User-confirmed",
+      "scope": "in_scope",
+      "photoVerified": true,
+      "sourcePhotoCaptured": false,
+      "createdAt": "2026-08-07T15:16:35.494Z",
+      "updatedAt": "2026-08-07T15:16:35.494Z",
+      "github": {
+        "imagePath": "data/inventory/images/inv-1786115795494-31ce8c27bdbf7.jpg",
+        "imageUrl": "https://raw.githubusercontent.com/perfectoffer13/Scanner/main/data/inventory/images/inv-1786115795494-31ce8c27bdbf7.jpg",
+        "publishedAt": "2026-08-08T11:31:46.622Z"
       }
     },
     {
