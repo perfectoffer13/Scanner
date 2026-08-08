@@ -6,7 +6,7 @@ const MAX_BODY_CHARS = 4500000;
 const MAX_IMAGE_DATA_LENGTH = 4000000;
 const MAX_ITEMS = 10;
 const INVENTORY_SCHEMA_VERSION = 2;
-const STUDIO_ASSET_VERSION = "studio-v1";
+const STUDIO_ASSET_VERSION = "studio-v2-ai";
 const STUDIO_IMAGE_WIDTH = 1000;
 const STUDIO_IMAGE_HEIGHT = 1000;
 const GITHUB_API_VERSION = "2022-11-28";
@@ -220,6 +220,7 @@ function normalizeItem(input) {
     barcodePhotoConflict: input.barcodePhotoConflict === true,
     imageStatus: text(input.imageStatus, 60),
     assetVersion: text(input.assetVersion, 60),
+    studioImageProcessing: text(input.studioImageProcessing, 120),
     studioImageVerified: input.studioImageVerified === true,
     studioImageWidth: Number(input.studioImageWidth) || 0,
     studioImageHeight: Number(input.studioImageHeight) || 0,
@@ -254,6 +255,9 @@ function validatePublishableItem(item, hasExistingImage, hasNewImage) {
   if (!item.studioImageVerified) reasons.push("studio image has not been verified");
   if (item.studioImageWidth !== STUDIO_IMAGE_WIDTH || item.studioImageHeight !== STUDIO_IMAGE_HEIGHT) {
     reasons.push("studio image must be 1000 x 1000");
+  }
+  if (!/^ai-studio-generated-(?:gpt-image-1\.5|gpt-image-1|gpt-image-1-mini|chatgpt-image-latest)$/.test(item.studioImageProcessing)) {
+    reasons.push("AI-generated studio image is required");
   }
   if (!hasExistingImage && !hasNewImage) reasons.push("verified studio image data is required");
   return Array.from(new Set(reasons));
