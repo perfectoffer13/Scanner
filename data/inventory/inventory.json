@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "app": "backbar-product-identification",
+  "repository": "perfectoffer13/Scanner",
+  "branch": "main",
+  "updatedAt": "2026-08-08T11:29:27.322Z",
+  "items": [
+    {
+      "id": "inv-1786188534726-89cba85d39a61",
+      "barcode": "",
+      "name": "Backbar Publishing Test",
+      "brand": "Backbar",
+      "volume": "Test",
+      "variant": "",
+      "type": "Other liquid",
+      "abv": "",
+      "category": "Test",
+      "description": "Temporary end-to-end GitHub publishing verification item.",
+      "packaging": "",
+      "country": "",
+      "source": "Manual entry",
+      "matchConfidence": "User-confirmed",
+      "scope": "in_scope",
+      "photoVerified": true,
+      "sourcePhotoCaptured": false,
+      "createdAt": "2026-08-08T11:28:54.726Z",
+      "updatedAt": "2026-08-08T11:28:54.726Z",
+      "github": {
+        "imagePath": "",
+        "imageUrl": "",
+        "publishedAt": "2026-08-08T11:29:27.322Z"
+      }
+    }
+  ]
+}
