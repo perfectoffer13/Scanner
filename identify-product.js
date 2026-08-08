@@ -1,7 +1,7 @@
 (function(){
 "use strict";
 
-const APP_VERSION = "0.8.4";
+const APP_VERSION = "0.8.5";
 const appVersionEl = document.getElementById("app-version");
 if (appVersionEl) appVersionEl.textContent = "Version " + APP_VERSION;
 document.title = "Barcode Scanner Test · v" + APP_VERSION;
@@ -694,13 +694,17 @@ const STUDIO_ASSET_VERSION = "studio-v2-ai";
 const INVENTORY_MAX_ITEMS = 10;
 const PHOTO_LOOKUP_ENDPOINT = "/.netlify/functions/photo-lookup";
 const STUDIO_IMAGE_ENDPOINT = "/.netlify/functions/studio-image";
+const STUDIO_IMAGE_STATUS_ENDPOINT = "/.netlify/functions/studio-image-status";
 const PUBLISH_INVENTORY_ENDPOINT = "/.netlify/functions/publish-inventory";
 const MAX_IMAGE_EDGE = 1400;
 const STUDIO_IMAGE_WIDTH = 1000;
 const STUDIO_IMAGE_HEIGHT = 1000;
-// Netlify synchronous functions have a hard 60-second limit; stop early enough
-// to return a useful retry message instead of waiting for the platform to cut us off.
+// The server saves completed results by job ID. If a mobile connection or
+// edge proxy returns 504 after the server finishes, recover the saved image
+// without starting a second paid generation request.
 const STUDIO_IMAGE_TIMEOUT_MS = 58000;
+const STUDIO_IMAGE_RECOVERY_TIMEOUT_MS = 20000;
+const STUDIO_IMAGE_POLL_INTERVAL_MS = 1500;
 const AI_STUDIO_MODE_PATTERN = /^ai-studio-generated-(?:gpt-image-1\.5|gpt-image-1|gpt-image-1-mini|chatgpt-image-latest)$/;
 let inventoryItems = [];
 let manualEditingId = null;
@@ -1477,8 +1481,71 @@ function standardizeGeneratedStudioImage(dataUrl){
     source.src = dataUrl;
   });
 }
+function createStudioJobId(){
+  const random = window.crypto && typeof window.crypto.randomUUID === "function"
+    ? window.crypto.randomUUID()
+    : Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
+  return "studio-" + random.replace(/[^a-zA-Z0-9-]/g, "").slice(0, 80);
+}
+function studioDeliveryCanRecover(response, error){
+  return !!(
+    (response && response.status === 504) ||
+    (error && (error.name === "AbortError" || error.name === "TypeError"))
+  );
+}
+async function recoverStudioImage(jobId, startedAt){
+  const recoveryStartedAt = performance.now();
+  const deadline = Date.now() + STUDIO_IMAGE_RECOVERY_TIMEOUT_MS;
+  let lastStatus = "pending";
+  let pollCount = 0;
+  debugLog("studio_image_delivery_recovery_started", {
+    jobId,
+    timeoutMs:STUDIO_IMAGE_RECOVERY_TIMEOUT_MS
+  });
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(
+        STUDIO_IMAGE_STATUS_ENDPOINT + "?jobId=" + encodeURIComponent(jobId),
+        { credentials:"same-origin", cache:"no-store" }
+      );
+      const raw = await response.text();
+      let data = null;
+      try { data = raw ? JSON.parse(raw) : null; } catch(error) {}
+      if (response.ok && data && data.status === "completed" && data.imageDataUrl) {
+        debugLog("studio_image_delivery_recovered", {
+          jobId,
+          pollCount,
+          elapsedMs:Math.round(performance.now() - recoveryStartedAt),
+          generationElapsedMs:Math.round(performance.now() - startedAt)
+        });
+        return data;
+      }
+      if (data && data.status) lastStatus = String(data.status);
+      if (response.ok && data && data.status === "failed") {
+        const failure = new Error(data.error || "The AI studio renderer failed on the server.");
+        failure.code = "STUDIO_JOB_FAILED";
+        throw failure;
+      }
+    } catch(error) {
+      if (error && error.code === "STUDIO_JOB_FAILED") throw error;
+      lastStatus = "temporarily_unavailable";
+    }
+    pollCount += 1;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    await new Promise(resolve => setTimeout(resolve, Math.min(STUDIO_IMAGE_POLL_INTERVAL_MS, remaining)));
+  }
+  debugLog("studio_image_delivery_recovery_failed", {
+    jobId,
+    lastStatus,
+    pollCount,
+    elapsedMs:Math.round(performance.now() - recoveryStartedAt)
+  });
+  throw new Error("The studio image was not delivered to this phone in time. No second AI request was made; please retry the image step.");
+}
 async function generateStudioImage(sourceDataUrl, product, barcode){
   if (!sourceDataUrl) throw new Error("A source bottle photo is required before studio generation.");
+  const jobId = createStudioJobId();
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), STUDIO_IMAGE_TIMEOUT_MS);
   const startedAt = performance.now();
@@ -1486,6 +1553,7 @@ async function generateStudioImage(sourceDataUrl, product, barcode){
   studioImageVerified = false;
   studioImageQuality = null;
   debugLog("studio_image_generation_started", {
+    jobId,
     barcode:barcode || null,
     product:productForStudioGeneration(product, barcode),
     model:"gpt-image-1.5",
@@ -1493,24 +1561,43 @@ async function generateStudioImage(sourceDataUrl, product, barcode){
     inputFidelity:"high"
   });
   try {
-    const response = await fetch(STUDIO_IMAGE_ENDPOINT, {
-      method:"POST",
-      headers:{ "Content-Type":"application/json" },
-      credentials:"same-origin",
-      signal:controller.signal,
-      body:JSON.stringify({
-        sourceImageDataUrl:sourceDataUrl,
-        barcode:barcode || null,
-        product:productForStudioGeneration(product, barcode)
-      })
-    });
-    const raw = await response.text();
+    let response = null;
     let data = null;
-    try { data = raw ? JSON.parse(raw) : null; } catch(error) {}
-    if (!response.ok || !data || data.ok !== true || !data.imageDataUrl) {
+    let deliveryError = null;
+    try {
+      response = await fetch(STUDIO_IMAGE_ENDPOINT, {
+        method:"POST",
+        headers:{ "Content-Type":"application/json" },
+        credentials:"same-origin",
+        signal:controller.signal,
+        body:JSON.stringify({
+          jobId,
+          sourceImageDataUrl:sourceDataUrl,
+          barcode:barcode || null,
+          product:productForStudioGeneration(product, barcode)
+        })
+      });
+      const raw = await response.text();
+      try { data = raw ? JSON.parse(raw) : null; } catch(error) {}
+    } catch(error) {
+      deliveryError = error;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+    if (studioDeliveryCanRecover(response, deliveryError)) {
+      updateWorkflowStatus("Step 4 of 5 - AI studio image finished - retrieving saved result", "pending");
+      data = await recoverStudioImage(jobId, startedAt);
+      response = { ok:true, status:200 };
+    } else if (deliveryError) {
+      throw deliveryError;
+    }
+    if (!response || !response.ok) {
       const detail = (data && data.error) || "AI studio image generation failed";
       const requestId = data && data.requestId ? " (request " + data.requestId + ")" : "";
-      throw new Error("HTTP " + response.status + ": " + detail + requestId);
+      throw new Error("HTTP " + (response ? response.status : 0) + ": " + detail + requestId);
+    }
+    if (!data || data.ok !== true || !data.imageDataUrl) {
+      throw new Error("AI studio image generation returned no usable image.");
     }
     const standardized = await standardizeGeneratedStudioImage(data.imageDataUrl);
     studioImageProcessingMode = "ai-studio-generated-" + String(data.model || "gpt-image-1.5");
@@ -1526,6 +1613,7 @@ async function generateStudioImage(sourceDataUrl, product, barcode){
       outputDimensions:{ width:STUDIO_IMAGE_WIDTH, height:STUDIO_IMAGE_HEIGHT }
     };
     debugLog("studio_image_generation_completed", {
+      jobId,
       barcode:barcode || null,
       model:data.model || null,
       width:STUDIO_IMAGE_WIDTH,
@@ -1539,6 +1627,7 @@ async function generateStudioImage(sourceDataUrl, product, barcode){
     studioImageVerified = false;
     studioImageQuality = { ok:false, generated:false, error:errorDetails(error) };
     debugLog("studio_image_generation_failed", {
+      jobId,
       barcode:barcode || null,
       error:errorDetails(error),
       elapsedMs:Math.round(performance.now() - startedAt)
