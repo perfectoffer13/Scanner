@@ -1,7 +1,7 @@
 (function(){
 "use strict";
 
-const APP_VERSION = "0.8.5";
+const APP_VERSION = "0.8.6";
 const appVersionEl = document.getElementById("app-version");
 if (appVersionEl) appVersionEl.textContent = "Version " + APP_VERSION;
 document.title = "Barcode Scanner Test · v" + APP_VERSION;
@@ -703,8 +703,8 @@ const STUDIO_IMAGE_HEIGHT = 1000;
 // edge proxy returns 504 after the server finishes, recover the saved image
 // without starting a second paid generation request.
 const STUDIO_IMAGE_TIMEOUT_MS = 58000;
-const STUDIO_IMAGE_RECOVERY_TIMEOUT_MS = 20000;
-const STUDIO_IMAGE_POLL_INTERVAL_MS = 1500;
+const STUDIO_IMAGE_RECOVERY_TIMEOUT_MS = 60000;
+const STUDIO_IMAGE_POLL_INTERVAL_MS = 2500;
 const AI_STUDIO_MODE_PATTERN = /^ai-studio-generated-(?:gpt-image-1\.5|gpt-image-1|gpt-image-1-mini|chatgpt-image-latest)$/;
 let inventoryItems = [];
 let manualEditingId = null;
@@ -1490,7 +1490,8 @@ function createStudioJobId(){
 function studioDeliveryCanRecover(response, error){
   return !!(
     (response && response.status === 504) ||
-    (error && (error.name === "AbortError" || error.name === "TypeError"))
+    (!response && error) ||
+    (response && response.ok === true && error)
   );
 }
 async function recoverStudioImage(jobId, startedAt){
@@ -1584,7 +1585,12 @@ async function generateStudioImage(sourceDataUrl, product, barcode){
     } finally {
       clearTimeout(timeoutId);
     }
-    if (studioDeliveryCanRecover(response, deliveryError)) {
+    const responseLooksIncomplete = !!(
+      response &&
+      response.ok === true &&
+      (!data || data.ok !== true || !data.imageDataUrl)
+    );
+    if (studioDeliveryCanRecover(response, deliveryError) || responseLooksIncomplete) {
       updateWorkflowStatus("Step 4 of 5 - AI studio image finished - retrieving saved result", "pending");
       data = await recoverStudioImage(jobId, startedAt);
       response = { ok:true, status:200 };
