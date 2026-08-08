@@ -3,7 +3,7 @@
   "app": "backbar-product-identification",
   "repository": "perfectoffer13/Scanner",
   "branch": "main",
-  "updatedAt": "2026-08-08T11:31:31.509Z",
+  "updatedAt": "2026-08-08T11:31:33.626Z",
   "items": [
     {
       "id": "inv-1786098733332-01bdcf2e28b8b8",
@@ -55,6 +55,32 @@
         "imagePath": "data/inventory/images/inv-1786104713678-f0de60b04341.jpg",
         "imageUrl": "https://raw.githubusercontent.com/perfectoffer13/Scanner/main/data/inventory/images/inv-1786104713678-f0de60b04341.jpg",
         "publishedAt": "2026-08-08T11:31:31.509Z"
+      }
+    },
+    {
+      "id": "inv-1786104740237-6a7ef5d841ace8",
+      "barcode": "90492501",
+      "name": "Powerade Naartjie",
+      "brand": "Coca Cola",
+      "volume": "500ml",
+      "variant": "",
+      "type": "",
+      "abv": "",
+      "category": "",
+      "description": "Coca Cola, Powerade Naartjie, 500ml",
+      "packaging": "",
+      "country": "",
+      "source": "Manual entry",
+      "matchConfidence": "User-confirmed",
+      "scope": "in_scope",
+      "photoVerified": true,
+      "sourcePhotoCaptured": false,
+      "createdAt": "2026-08-07T12:12:20.237Z",
+      "updatedAt": "2026-08-07T12:12:20.237Z",
+      "github": {
+        "imagePath": "",
+        "imageUrl": "",
+        "publishedAt": "2026-08-08T11:31:33.626Z"
       }
     }
   ]
