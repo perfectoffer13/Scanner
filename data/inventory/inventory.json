@@ -3,7 +3,7 @@
   "app": "backbar-product-identification",
   "repository": "perfectoffer13/Scanner",
   "branch": "main",
-  "updatedAt": "2026-08-08T11:31:39.485Z",
+  "updatedAt": "2026-08-08T11:31:42.808Z",
   "items": [
     {
       "id": "inv-1786098733332-01bdcf2e28b8b8",
@@ -55,6 +55,32 @@
         "imagePath": "data/inventory/images/inv-1786104713678-f0de60b04341.jpg",
         "imageUrl": "https://raw.githubusercontent.com/perfectoffer13/Scanner/main/data/inventory/images/inv-1786104713678-f0de60b04341.jpg",
         "publishedAt": "2026-08-08T11:31:31.509Z"
+      }
+    },
+    {
+      "id": "inv-1786105007420-53fd97b4c576b",
+      "barcode": "5060335632715",
+      "name": "Monster Energy The Doctor VR46",
+      "brand": "Monster Energy",
+      "volume": "500ml",
+      "variant": "Citrus",
+      "type": "",
+      "abv": "",
+      "category": "Energy Drink",
+      "description": "Citrus-flavoured carbonated energy drink with 160mg caffeine, created in collaboration with MotoGP champion Valentino Rossi",
+      "packaging": "",
+      "country": "",
+      "source": "Manual entry",
+      "matchConfidence": "User-confirmed",
+      "scope": "in_scope",
+      "photoVerified": true,
+      "sourcePhotoCaptured": false,
+      "createdAt": "2026-08-07T12:16:47.420Z",
+      "updatedAt": "2026-08-07T12:16:47.420Z",
+      "github": {
+        "imagePath": "data/inventory/images/inv-1786105007420-53fd97b4c576b.jpg",
+        "imageUrl": "https://raw.githubusercontent.com/perfectoffer13/Scanner/main/data/inventory/images/inv-1786105007420-53fd97b4c576b.jpg",
+        "publishedAt": "2026-08-08T11:31:42.808Z"
       }
     },
     {
