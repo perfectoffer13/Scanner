@@ -16,6 +16,13 @@ function text(value, maxLength = 6000) {
   return String(value).replace(/\s+/g, " ").trim().slice(0, maxLength);
 }
 
+function redactSecrets(value) {
+  return text(value, 320)
+    .replace(/sk-ant-[A-Za-z0-9_-]+/gi, "[redacted]")
+    .replace(/sk-proj-[A-Za-z0-9_-]+/gi, "[redacted]")
+    .replace(/sk-[A-Za-z0-9_-]+/gi, "[redacted]");
+}
+
 function jsonResponse(status, body) {
   return new Response(JSON.stringify(body), {
     status,
@@ -93,6 +100,17 @@ export default async function studioImage(request) {
       error:"AI studio image generation is not configured. Add OPENAI_API_KEY in Netlify."
     });
   }
+  if (/^sk-ant-/i.test(apiKey)) {
+    console.error("[studio-image] rejected wrong provider key", JSON.stringify({
+      provider:"anthropic",
+      expected:"openai"
+    }));
+    return jsonResponse(503, {
+      ok:false,
+      code:"WRONG_PROVIDER_KEY",
+      error:"OPENAI_API_KEY contains an Anthropic/Claude key. Keep the Claude key in ANTHROPIC_API_KEY for product lookup, and set OPENAI_API_KEY to a valid OpenAI API key for studio image generation."
+    });
+  }
 
   let payload;
   try { payload = await request.json(); } catch { return jsonResponse(400, { ok:false, error:"Valid JSON is required" }); }
@@ -143,16 +161,20 @@ export default async function studioImage(request) {
     try { data = raw ? JSON.parse(raw) : null; } catch {}
     if (!response.ok) {
       const requestId = text(response.headers.get("x-request-id"), 120);
+      const providerError = response.status === 401
+        ? "OpenAI rejected OPENAI_API_KEY. Replace it with a valid OpenAI API key; a Claude/Anthropic key cannot generate the studio image."
+        : redactSecrets(data?.error?.message || "OpenAI image generation failed");
       console.error("[studio-image] OpenAI error", JSON.stringify({
         status:response.status,
         model,
         requestId:requestId || null,
-        error:text(data?.error?.message || "OpenAI image generation failed", 320),
+        error:providerError,
         elapsedMs:Date.now() - startedAt
       }));
       return jsonResponse(response.status || 502, {
         ok:false,
-        error:text(data?.error?.message || "OpenAI image generation failed", 320),
+        code:response.status === 401 ? "OPENAI_AUTH_FAILED" : "OPENAI_IMAGE_REQUEST_FAILED",
+        error:providerError,
         model,
         requestId:requestId || null,
         elapsedMs:Date.now() - startedAt
@@ -180,14 +202,14 @@ export default async function studioImage(request) {
     console.error("[studio-image] request failed", JSON.stringify({
       model,
       timedOut,
-      error:text(error?.message || "The AI studio renderer could not be reached", 320),
+      error:redactSecrets(error?.message || "The AI studio renderer could not be reached"),
       elapsedMs:Date.now() - startedAt
     }));
     return jsonResponse(timedOut ? 504 : 502, {
       ok:false,
       error:timedOut
         ? "The AI studio renderer timed out. Please retry the studio image step."
-        : text(error?.message || "The AI studio renderer could not be reached", 320),
+        : redactSecrets(error?.message || "The AI studio renderer could not be reached"),
       model,
       elapsedMs:Date.now() - startedAt
     });
