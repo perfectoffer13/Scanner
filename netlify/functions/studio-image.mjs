@@ -104,7 +104,10 @@ export default async function studioImage(request) {
 
   const product = productDetails(payload?.product);
   const barcode = text(payload?.barcode || product.barcode, 14).replace(/[^0-9]/g, "");
-  if (!product.name) return jsonResponse(400, { ok:false, error:"A verified product name is required before studio generation" });
+  if (!product.name) {
+    console.warn("[studio-image] rejected: missing verified product name");
+    return jsonResponse(400, { ok:false, error:"A verified product name is required before studio generation" });
+  }
 
   const configuredModel = text(process.env.OPENAI_STUDIO_IMAGE_MODEL, 80);
   const model = SUPPORTED_MODELS.has(configuredModel) ? configuredModel : "gpt-image-1.5";
@@ -123,6 +126,7 @@ export default async function studioImage(request) {
   form.append("n", "1");
   form.append("moderation", "auto");
   form.append("user", "backbar-scanner");
+  console.info("[studio-image] request", JSON.stringify({ model, barcode:barcode || null, sourceBytes:imageBytes.length }));
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), IMAGE_TIMEOUT_MS);
@@ -138,17 +142,28 @@ export default async function studioImage(request) {
     let data = null;
     try { data = raw ? JSON.parse(raw) : null; } catch {}
     if (!response.ok) {
+      const requestId = text(response.headers.get("x-request-id"), 120);
+      console.error("[studio-image] OpenAI error", JSON.stringify({
+        status:response.status,
+        model,
+        requestId:requestId || null,
+        error:text(data?.error?.message || "OpenAI image generation failed", 320),
+        elapsedMs:Date.now() - startedAt
+      }));
       return jsonResponse(response.status || 502, {
         ok:false,
         error:text(data?.error?.message || "OpenAI image generation failed", 320),
         model,
+        requestId:requestId || null,
         elapsedMs:Date.now() - startedAt
       });
     }
     const imageBase64 = text(data?.data?.[0]?.b64_json, 12000000).replace(/\s+/g, "");
     if (!imageBase64) {
+      console.error("[studio-image] OpenAI returned no image", JSON.stringify({ model, elapsedMs:Date.now() - startedAt }));
       return jsonResponse(502, { ok:false, error:"The AI studio renderer returned no image", model });
     }
+    console.info("[studio-image] success", JSON.stringify({ model, outputBytes:imageBase64.length, elapsedMs:Date.now() - startedAt }));
     return jsonResponse(200, {
       ok:true,
       imageDataUrl:"data:image/jpeg;base64," + imageBase64,
@@ -162,6 +177,12 @@ export default async function studioImage(request) {
     });
   } catch(error) {
     const timedOut = error?.name === "AbortError";
+    console.error("[studio-image] request failed", JSON.stringify({
+      model,
+      timedOut,
+      error:text(error?.message || "The AI studio renderer could not be reached", 320),
+      elapsedMs:Date.now() - startedAt
+    }));
     return jsonResponse(timedOut ? 504 : 502, {
       ok:false,
       error:timedOut
