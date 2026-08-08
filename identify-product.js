@@ -1,7 +1,7 @@
 (function(){
 "use strict";
 
-const APP_VERSION = "0.8.3";
+const APP_VERSION = "0.8.4";
 const appVersionEl = document.getElementById("app-version");
 if (appVersionEl) appVersionEl.textContent = "Version " + APP_VERSION;
 document.title = "Barcode Scanner Test · v" + APP_VERSION;
@@ -784,11 +784,22 @@ function inventoryValidation(item){
 function normalizeInventoryItem(input){
   const item = input && typeof input === "object" ? Object.assign({}, input) : {};
   const barcode = normalizeGtin(item.gtin || item.barcode);
+  const hasVerifiedStudioImage = !!(
+    item.studioImageDataUrl &&
+    item.studioImageVerified === true &&
+    item.assetVersion === STUDIO_ASSET_VERSION &&
+    isAiStudioGenerated(item)
+  );
   const legacyStudioImage = !!(
     item.studioImageDataUrl &&
-    (item.studioImageVerified !== true || item.assetVersion !== STUDIO_ASSET_VERSION || !isAiStudioGenerated(item))
+    !hasVerifiedStudioImage
   );
-  const sourceImageUrl = item.sourceImageUrl || (legacyStudioImage ? item.studioImageDataUrl : "");
+  // The phone photo is verification evidence only. Once the generated studio
+  // asset exists, keeping the source data URL doubles storage for no inventory
+  // benefit and is a common cause of mobile localStorage quota failures.
+  const sourceImageUrl = hasVerifiedStudioImage
+    ? ""
+    : item.sourceImageUrl || (legacyStudioImage ? item.studioImageDataUrl : "");
   const studioImageDataUrl = legacyStudioImage ? "" : String(item.studioImageDataUrl || "");
   const needsReview = item.needsReview === true || legacyStudioImage || !barcode;
   const reviewReason = legacyStudioImage
@@ -825,15 +836,42 @@ function readInventory(){
   }
 }
 function writeInventory(){
+  const normalized = inventoryItems.slice(0, INVENTORY_MAX_ITEMS).map(normalizeInventoryItem);
+  const compacted = normalized.map(item => Object.assign({}, item, {
+    sourceImageUrl:""
+  }));
+  let serialized = "";
   try {
-    inventoryItems = inventoryItems.slice(0, INVENTORY_MAX_ITEMS).map(normalizeInventoryItem);
-    localStorage.setItem(INVENTORY_STORAGE_KEY, JSON.stringify(inventoryItems));
+    inventoryItems = normalized;
+    serialized = JSON.stringify(inventoryItems);
+    localStorage.setItem(INVENTORY_STORAGE_KEY, serialized);
     updateInventoryUi();
     return true;
-  } catch(error) {
-    debugLog("inventory_write_failed", { error:errorDetails(error) });
-    setManualMessage("The image may be too large for phone storage. Try taking the photo again.");
-    return false;
+  } catch(firstError) {
+    // Retry with source evidence removed from every item. This preserves the
+    // verified AI studio image and all product fields while reducing storage.
+    try {
+      inventoryItems = compacted;
+      serialized = JSON.stringify(inventoryItems);
+      localStorage.setItem(INVENTORY_STORAGE_KEY, serialized);
+      updateInventoryUi();
+      debugLog("inventory_write_compacted", {
+        itemCount:inventoryItems.length,
+        bytes:serialized.length,
+        firstError:errorDetails(firstError)
+      });
+      return true;
+    } catch(secondError) {
+      inventoryItems = normalized;
+      debugLog("inventory_write_failed", {
+        itemCount:inventoryItems.length,
+        bytes:serialized.length,
+        firstError:errorDetails(firstError),
+        retryError:errorDetails(secondError)
+      });
+      setManualMessage("The phone rejected the inventory image because local storage is full. Clear old browser data or remove an older inventory item, then retry.");
+      return false;
+    }
   }
 }
 function updateInventoryUi(){
@@ -1298,6 +1336,7 @@ async function saveManualEntry(){
     }
   }
   const hasStudioImage = !!studioImageDataUrl;
+  const storedSourceImageUrl = hasStudioImage ? "" : sourceImageUrl;
   const record = Object.assign({}, existing || {}, data, {
     id:stableInventoryId(existing || {}, barcode),
     barcode:barcode,
@@ -1311,7 +1350,7 @@ async function saveManualEntry(){
     photoVerified:hasStudioImage || (existing && existing.photoVerified === true),
     barcodePhotoConflict:false,
     studioImageDataUrl:studioImageDataUrl,
-    sourceImageUrl:sourceImageUrl,
+    sourceImageUrl:storedSourceImageUrl,
     imageStatus:hasStudioImage ? "studio_verified" : "needs_photo",
     studioImageVerified:hasStudioImage,
     assetVersion:hasStudioImage ? STUDIO_ASSET_VERSION : "",
@@ -1633,6 +1672,13 @@ function saveProductToInventory(product, sourceImageUrl){
     return null;
   }
   const now = new Date().toISOString();
+  const hasVerifiedStudioImage = !!(
+    product.studioImageDataUrl &&
+    product.studioImageVerified === true &&
+    product.assetVersion === STUDIO_ASSET_VERSION &&
+    isAiStudioGenerated(product)
+  );
+  const capturedSourceImage = sourceImageUrl || product.sourceImageUrl || "";
   const record = Object.assign({}, existing || {}, product, {
     id:stableInventoryId(existing || {}, barcode),
     barcode:barcode,
@@ -1643,8 +1689,8 @@ function saveProductToInventory(product, sourceImageUrl){
     confidence:product.confidence || "high",
     scope:"in_scope",
     studioImageDataUrl:product.studioImageDataUrl || "",
-    sourceImageUrl:sourceImageUrl || product.sourceImageUrl || "",
-    sourcePhotoCaptured:!!(sourceImageUrl || product.sourceImageUrl),
+    sourceImageUrl:hasVerifiedStudioImage ? "" : capturedSourceImage,
+    sourcePhotoCaptured:!!(capturedSourceImage || product.sourcePhotoCaptured),
     photoVerified:product.photoVerified !== false,
     barcodePhotoConflict:false,
     imageStatus:"studio_verified",
@@ -1667,14 +1713,27 @@ function saveProductToInventory(product, sourceImageUrl){
     updatedAt:now
   });
   const validation = inventoryValidation(record);
-  if (!validation.valid) {
+  const hardValidationReasons = validation.reasons.filter(reason =>
+    /valid 8|barcode and bottle photo disagree|bottle photo has not been verified|source bottle photo is required|verified studio image is required|AI-generated studio image is required|verified studio image is missing/i.test(reason)
+  );
+  if (hardValidationReasons.length) {
     debugLog("inventory_auto_save_blocked", {
       barcode:record.barcode || null,
       name:truncate(record.name,160),
       reason:"publish_ready_validation_failed",
-      reasons:validation.reasons
+      reasons:validation.reasons,
+      hardReasons:hardValidationReasons
     });
     return null;
+  }
+  if (validation.reasons.length) {
+    record.needsReview = true;
+    record.reviewReason = validation.reasons.slice(0, 3).join(" ");
+    debugLog("inventory_auto_saved_needs_review", {
+      barcode:record.barcode || null,
+      name:truncate(record.name,160),
+      reasons:validation.reasons
+    });
   }
   if (existing) {
     inventoryItems = inventoryItems.map(item => item.id === existing.id ? record : item);
@@ -1727,13 +1786,22 @@ function scheduleAutomaticInventorySave(product, sourceImageUrl){
     if (token !== workflowToken || !product) return;
     const saved = saveProductToInventory(product, sourceImageUrl);
     if (!saved) {
-      updateWorkflowStatus("Step 5 of 5 · Could not save automatically — manual confirmation required", "warning");
+      updateWorkflowStatus("Step 5 of 5 - Could not save automatically - manual confirmation required", "warning");
       setResultButtonState({ canSave:false, photo:false, manual:true, saveLabel:"Manual confirmation required" });
-      scheduleAutomaticManualFallback("inventory_auto_save_failed");
+      scheduleAutomaticManualFallback("inventory_auto_save_failed", {
+        workflowMessage:"Step 5 of 5 failed - the verified item could not be written to this phone",
+        manualMessage:"The barcode, verified product details, and generated studio image are retained below. Confirm or edit the fields, then retry saving.",
+        sourceImageUrl:sourceImageUrl
+      });
       return;
     }
     if (lastResult) lastResult.product = saved;
-    updateWorkflowStatus("Step 5 of 5 · Saved to inventory automatically", "success");
+    updateWorkflowStatus(
+      saved.needsReview
+        ? "Step 5 of 5 - Saved to inventory - review missing fields before publishing"
+        : "Step 5 of 5 - Saved to inventory automatically",
+      saved.needsReview ? "warning" : "success"
+    );
     setResultButtonState({ canSave:false, photo:false, manual:true, publish:true, canPublish:true, publishLabel:"Publish item", saveLabel:"Saved to inventory" });
     const body = document.getElementById("r-body");
     if (body && !body.querySelector(".auto-save-note")) {
@@ -1753,7 +1821,10 @@ function scheduleAutomaticInventorySave(product, sourceImageUrl){
 function scheduleAutomaticManualFallback(reason, details){
   clearAutomaticFallbackTimer();
   const token = workflowToken;
-  updateWorkflowStatus("Step 4 of 5 failed — automatically opening manual entry…", "warning");
+  const workflowMessage = details && details.workflowMessage
+    ? details.workflowMessage
+    : "Step 4 of 5 failed - automatically opening manual entry...";
+  updateWorkflowStatus(workflowMessage, "warning");
   debugLog("workflow_auto_fallback_scheduled", Object.assign({
     from:"photo_recognition",
     to:"manual_entry",
@@ -1772,14 +1843,18 @@ function scheduleAutomaticManualFallback(reason, details){
     }
     const barcode = lastResult && lastResult.barcode ? lastResult.barcode : "";
     const sourceImageUrl = details && details.sourceImageUrl ? details.sourceImageUrl : "";
+    const fallbackProduct = lastResult && lastResult.product
+      ? Object.assign({}, lastResult.product)
+      : { barcode:barcode };
+    if (sourceImageUrl) fallbackProduct.sourceImageUrl = sourceImageUrl;
     debugLog("workflow_auto_advanced", {
       from:"photo_recognition",
       to:"manual_entry",
       reason:reason
     });
-    updateWorkflowStatus("Step 5 of 5 · Manual entry — confirm the product before saving", "pending");
+    updateWorkflowStatus("Step 5 of 5 - Manual entry - confirm the product before saving", "pending");
     openManualEntry(
-      { barcode:barcode, sourceImageUrl:sourceImageUrl },
+      fallbackProduct,
       { automatic:true, message:details && details.manualMessage ? details.manualMessage : "" }
     );
   }, AUTO_FALLBACK_DELAY_MS);
