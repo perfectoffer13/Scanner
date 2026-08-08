@@ -151,7 +151,7 @@ p.sub{color:var(--muted);font-size:13.5px;margin:0 0 26px;}
 
 <div id="app">
   <h1>Backbar Scanner</h1>
-  <div class="app-version" id="app-version" aria-label="Application version">Version 0.8.4</div>
+  <div class="app-version" id="app-version" aria-label="Application version">Version 0.8.5</div>
   <p class="sub">Verified liquid-stock inventory — barcode identity, photo evidence, studio asset, and publish-ready record.</p>
   <div class="inventory-summary">
     <span>My database · this device</span>
@@ -293,7 +293,7 @@ p.sub{color:var(--muted);font-size:13.5px;margin:0 0 26px;}
 (function(){
 "use strict";
 
-const APP_VERSION = "0.8.4";
+const APP_VERSION = "0.8.5";
 const appVersionEl = document.getElementById("app-version");
 if (appVersionEl) appVersionEl.textContent = "Version " + APP_VERSION;
 document.title = "Barcode Scanner Test · v" + APP_VERSION;
@@ -3561,6 +3561,6 @@ async function lookupProduct(barcode, metadata){
 function escapeHtml(s){ return (s||"").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 })();
 </script>
-<script src="./identify-product.js?v=0.8.4"></script>
+<script src="./identify-product.js?v=0.8.5"></script>
 </body>
 </html>
