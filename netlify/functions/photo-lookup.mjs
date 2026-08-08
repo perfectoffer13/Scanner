@@ -67,6 +67,8 @@ function citationUrls(data) {
 }
 function normalizeProduct(data, barcode, urls) {
   if (!data || data.found !== true) return null;
+  const barcodeMatch = firstText(data.barcode_match, data.barcodeMatch, data.identity_match, "unknown").toLowerCase();
+  if (barcode && /conflict|mismatch|different|not[_ -]?match/.test(barcodeMatch)) return null;
   const name = firstText(data.name, data.product_name, data.title);
   if (!name) return null;
   const sourceUrls = Array.from(new Set([
@@ -94,6 +96,7 @@ function normalizeProduct(data, barcode, urls) {
     sourceImageUrl:"",
     sourceUrls,
     matchConfidence:confidence,
+    barcodeMatch:barcodeMatch,
     evidence:firstText(data.evidence, "Identified from the uploaded product image."),
     scope:firstText(data.scope, "unknown")
   };
@@ -144,6 +147,16 @@ export default async function photoLookup(request) {
   if (imageDataUrl.length > MAX_IMAGE_DATA_LENGTH) return jsonResponse(413, { ok:false, error:"Image is too large" });
 
   const barcode = text(payload?.barcode, 80);
+  const expectedRecord = payload?.barcodeProduct && typeof payload.barcodeProduct === "object"
+    ? {
+        name:firstText(payload.barcodeProduct.name),
+        brand:firstText(payload.barcodeProduct.brand),
+        variant:firstText(payload.barcodeProduct.variant),
+        volume:firstText(payload.barcodeProduct.volume),
+        type:firstText(payload.barcodeProduct.type),
+        source:firstText(payload.barcodeProduct.source)
+      }
+    : null;
   const mediaType = imageMatch[1].toLowerCase() === "image/jpg" ? "image/jpeg" : imageMatch[1].toLowerCase();
   const imageBase64 = imageMatch[2].replace(/\s+/g, "");
   const prompt = [
@@ -153,10 +166,15 @@ export default async function photoLookup(request) {
     "Read visible label text carefully. Use web search once when it can verify the product name, flavour, size, or brand.",
     "If a barcode is supplied, use it as a search hint but do not assume the barcode result is correct.",
     barcode ? "Barcode hint from the scanner: " + barcode : "No barcode was available.",
+    "Treat the barcode as the primary identity. Use the photo to confirm the visible label, brand, product name, variant, and size.",
+    expectedRecord
+      ? "Unverified barcode lookup record for cross-checking only: " + JSON.stringify(expectedRecord)
+      : "No earlier barcode lookup record is available.",
+    "If the visible label conflicts with the exact barcode evidence or the supplied lookup record, return found:false and set barcode_match to conflict.",
     "Do not identify a product from a similar-looking package. If uncertain, return found:false.",
     "Do not guess missing fields. Return empty strings for fields not visible or verified.",
     "Return only one JSON object with no Markdown in this shape:",
-    '{"found":true,"scope":"in_scope|out_of_scope|unknown","name":"","brand":"","type":"","variant":"","volume":"","abv":"","packaging":"","country":"","category":"","description":"","source_urls":[],"confidence":"high|medium|low|none","evidence":""}',
+    '{"found":true,"scope":"in_scope|out_of_scope|unknown","barcode_match":"exact|consistent|conflict|unknown","name":"","brand":"","type":"","variant":"","volume":"","abv":"","packaging":"","country":"","category":"","description":"","source_urls":[],"confidence":"high|medium|low|none","evidence":""}',
     "Set found:true only when the label or a cited web source provides enough evidence for a useful inventory record.",
     "If the image is not a product label or cannot be identified confidently, return found:false, scope:unknown, confidence:none."
   ].join("\n");
